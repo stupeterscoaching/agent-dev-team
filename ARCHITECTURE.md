@@ -16,6 +16,14 @@ Three core principles:
 
 ---
 
+## Design Philosophy
+
+This system is influenced by [Late](https://github.com/mlhher/late)'s approach to agent orchestration: strict context discipline, ephemeral worker context windows, and deterministic execution. The core insight is that context pollution actively degrades model reasoning — research shows models can lose 60-80% of their effectiveness within 2-3 attempts when context is bloated.
+
+Our solution: persistent global context at the top, ephemeral isolated context at the worker level.
+
+---
+
 ## Agent Hierarchy
 
 ```
@@ -45,11 +53,37 @@ Three core principles:
 │                                                     │
 │   Researcher      Writer        Coder               │
 │                                                     │
-│   Self-assign from GitHub Issues backlog            │
+│   Ephemeral context — spawned per GitHub Issue      │
 │   Work concurrently unless blocked                  │
-│   Commit to branches, open PRs                      │
+│   Commit to branches, open PRs, then discard        │
 └─────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Worker Execution Model
+
+Workers are stateless, ephemeral agents. A fresh worker is spawned for each GitHub Issue. Once the PR is opened, the worker is discarded.
+
+**Spawn → Execute → PR → Discard**
+
+**Context on spawn — nothing else:**
+- The GitHub Issue (the complete, self-contained task brief)
+- `project.json` (project spec)
+- Tech Lead's coding standards
+- Only the specific files relevant to the task
+
+**Why this matters:**
+Context pollution degrades model reasoning. By giving workers only what they need for a single task, we keep token usage minimal, output quality high, and the Efficiency Auditor's data clean.
+
+**Failure handling — deterministic execution:**
+- Workers use strict exact-match search/replace blocks for code edits
+- If output doesn't match the file state exactly, the edit fails loudly
+- Worker enters a self-healing loop (max 3 attempts)
+- On 3rd failure → escalation contract fires → task returned to PM as blocked
+
+**PM Agent responsibility:**
+Because workers have no shared memory, every GitHub Issue must be completely self-contained. The PM Agent is responsible for writing Issues that a worker can execute with zero additional context. This is the most important constraint in the system.
 
 ---
 
@@ -121,6 +155,15 @@ Labels:
 Branch naming: {agent}/{taskId}/{short-description}
 Example: researcher/task-001/ai-agent-news-scrape
 ```
+
+**GitHub Issues as task briefs:**
+
+Each Issue is the complete world for the worker that picks it up. Issues must include:
+- Clear objective
+- Relevant file paths
+- Acceptance criteria
+- Any constraints or dependencies
+- Links to relevant prior PRs if needed
 
 ---
 
