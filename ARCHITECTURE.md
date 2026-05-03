@@ -18,9 +18,11 @@ Three core principles:
 
 ## Design Philosophy
 
-This system is influenced by [Late](https://github.com/mlhher/late)'s approach to agent orchestration: strict context discipline, ephemeral worker context windows, and deterministic execution. The core insight is that context pollution actively degrades model reasoning — research shows models can lose 60-80% of their effectiveness within 2-3 attempts when context is bloated.
+This system is influenced by [Late](https://github.com/mlhher/late)'s approach to agent orchestration: strict context discipline, ephemeral agent context windows, and deterministic execution. The core insight is that context pollution actively degrades model reasoning — research shows models can lose 60-80% of their effectiveness within 2-3 attempts when context is bloated.
 
-Our solution: persistent global context at the top, ephemeral isolated context at the worker level.
+Our solution: one persistent agent at the top, everything else ephemeral and scoped to its role.
+
+Every role in the system must be justified by the project. Agents spin up when needed and are discarded when done. The Director is the only persistent agent.
 
 ---
 
@@ -31,20 +33,23 @@ Our solution: persistent global context at the top, ephemeral isolated context a
 │                    DIRECTOR                         │
 │               (Claude Opus — API)                   │
 │                                                     │
-│  Strategy, architecture, quality control            │
+│  Persistent global context                          │
+│  Collaborates with executive to build project spec  │
+│  Spins up PM + Tech Lead on spec confirmation       │
 └──────────────────────┬──────────────────────────────┘
-                       │
+                       │ confirmed spec
            ┌───────────┴───────────┐
            │                       │
 ┌──────────▼──────┐       ┌────────▼────────┐
 │    PM AGENT     │       │   TECH LEAD     │
-│  (mid-tier)     │       │   (mid-tier)    │
+│  (ephemeral)    │       │   (ephemeral)   │
 │                 │       │                 │
 │  GitHub Issues  │       │  Code review    │
 │  Sprint mgmt    │       │  PR approval    │
 │  Discord setup  │       │  Quality scores │
+│  Cost estimates │       │  Cost estimates │
 └──────────┬──────┘       └────────┬────────┘
-           │                       │
+           │ confirmed estimate     │
            └───────────┬───────────┘
                        │
 ┌──────────────────────▼──────────────────────────────┐
@@ -53,10 +58,30 @@ Our solution: persistent global context at the top, ephemeral isolated context a
 │                                                     │
 │   Researcher      Writer        Coder               │
 │                                                     │
-│   Ephemeral context — spawned per GitHub Issue      │
+│   Ephemeral — spawned per GitHub Issue              │
 │   Work concurrently unless blocked                  │
 │   Commit to branches, open PRs, then discard        │
+│   Only roles justified by the spec are spun up      │
 └─────────────────────────────────────────────────────┘
+```
+
+---
+
+## Human Confirmation Gates
+
+Nothing spins up without executive confirmation. Two hard gates before any work starts:
+
+```
+Gate 1 — Spec confirmation
+  Director builds spec collaboratively with executive
+  Director → executive (#approvals ✅/❌)
+  ✅ → Director spins up PM + Tech Lead
+
+Gate 2 — Cost estimate confirmation
+  PM + Tech Lead read estimation-history.json
+  PM + Tech Lead build cost estimate
+  PM + Tech Lead → executive (#approvals ✅/❌)
+  ✅ → PM + Tech Lead spin up workers
 ```
 
 ---
@@ -74,7 +99,7 @@ Workers are stateless, ephemeral agents. A fresh worker is spawned for each GitH
 - Only the specific files relevant to the task
 
 **Why this matters:**
-Context pollution degrades model reasoning. By giving workers only what they need for a single task, we keep token usage minimal, output quality high, and the Efficiency Auditor's data clean.
+Context pollution degrades model reasoning. By giving workers only what they need for a single task, token usage stays minimal, output quality stays high, and the Efficiency Auditor's data stays clean.
 
 **Failure handling — deterministic execution:**
 - Workers use strict exact-match search/replace blocks for code edits
@@ -82,8 +107,170 @@ Context pollution degrades model reasoning. By giving workers only what they nee
 - Worker enters a self-healing loop (max 3 attempts)
 - On 3rd failure → escalation contract fires → task returned to PM as blocked
 
+**One worker per PR — always:**
+```
+One GitHub Issue = One Worker = One Branch = One PR
+No exceptions.
+```
+
+This eliminates merge conflicts at the worker level entirely.
+
 **PM Agent responsibility:**
 Because workers have no shared memory, every GitHub Issue must be completely self-contained. The PM Agent is responsible for writing Issues that a worker can execute with zero additional context. This is the most important constraint in the system.
+
+---
+
+## Project Spec Format
+
+The spec is built collaboratively between the executive and the Director before any agents spin up.
+
+**What the executive provides — the Brief:**
+
+```json
+{
+  "brief": {
+    "projectName": "string",
+    "problemStatement": "what problem does this solve and for who",
+    "desiredOutcome": "what does success look like from the user's perspective",
+    "constraints": {
+      "budget": 0,
+      "currency": "CAD",
+      "timeline": "string",
+      "technical": []
+    },
+    "examples": [],
+    "antiGoals": []
+  }
+}
+```
+
+**What the Director builds from the brief — the Spec:**
+
+```json
+{
+  "spec": {
+    "projectName": "string",
+    "version": "1.0.0",
+    "createdAt": "ISO8601",
+    "brief": {},
+    "architecture": {
+      "overview": "string",
+      "components": [],
+      "dataFlow": "string",
+      "techStack": {
+        "language": "string",
+        "runtime": "string",
+        "packages": []
+      }
+    },
+    "team": {
+      "workers": [],
+      "managers": ["pm", "techlead"],
+      "efficiency": true
+    },
+    "models": {
+      "director": "claude-opus-4-6",
+      "managers": "claude-haiku-4-5-20251001",
+      "workers": "llama3.1:8b"
+    },
+    "deliverables": [
+      {
+        "name": "string",
+        "type": "code | content | research",
+        "description": "string",
+        "acceptanceCriteria": []
+      }
+    ],
+    "openQuestions": []
+  }
+}
+```
+
+**Anti-goals** are as important as goals — they constrain the Director's architecture decisions and prevent scope creep before it starts.
+
+**Open questions** let the Director flag ambiguity before building. The Director posts these to `#approvals` and waits for executive clarification before finalising the spec.
+
+---
+
+## Estimation Memory
+
+PM and Tech Lead read from a shared estimation history file on spawn. This gives ephemeral agents institutional memory without persistent context.
+
+Location: `projects/estimation-history.json`
+
+```json
+{
+  "projects": [
+    {
+      "projectName": "string",
+      "projectType": "web-app | cli | content | research",
+      "completedAt": "ISO8601",
+      "estimate": {
+        "hours": 0,
+        "cost": 0,
+        "currency": "CAD"
+      },
+      "actuals": {
+        "hours": 0,
+        "cost": 0,
+        "currency": "CAD"
+      },
+      "variance": 0,
+      "notes": "string"
+    }
+  ]
+}
+```
+
+After each project closes, the Efficiency Auditor writes actuals back to this file via a PR. Estimation accuracy improves over time as the history grows.
+
+---
+
+## Pipeline Flow
+
+The complete end-to-end sequence:
+
+```
+PHASE 1 — BRIEF
+Executive → Director (high level brief via Discord #director)
+Director iterates, asks clarifying questions via #approvals
+Executive confirms ✅
+
+PHASE 2 — SPEC
+Director builds project.json
+Director → Executive (spec review via #approvals)
+Executive confirms ✅
+
+PHASE 3 — TEAM SPINUP
+Director spins up PM + Tech Lead (ephemeral)
+PM + Tech Lead read estimation-history.json
+PM + Tech Lead build cost estimate
+PM + Tech Lead → Executive (cost estimate via #approvals)
+Executive confirms ✅
+
+PHASE 4 — PROJECT SETUP
+PM creates GitHub repo labels
+PM creates Discord project channels
+PM creates GitHub Issues from spec deliverables
+PM → Tech Lead (coding standards for this project)
+
+PHASE 5 — EXECUTION
+Workers spawn per Issue (ephemeral)
+Workers execute → open PRs → discard
+Tech Lead reviews PRs → scores quality → merges or rejects
+Rejected PRs → worker respawns with feedback in Issue
+Efficiency Auditor observes all traffic passively
+Insights bubble up via insight contracts
+Escalations fire as needed
+
+PHASE 6 — CLOSE
+All Issues closed
+Tech Lead → PM (final quality report)
+PM → Director (project summary)
+Efficiency Auditor writes actuals to estimation-history.json via PR
+PM + Tech Lead discard
+Director → Executive (project complete, summary in #output)
+```
 
 ---
 
@@ -103,28 +290,36 @@ Discord is the real-time visibility and communication layer. GitHub is the sourc
 📁 ORG-WIDE
   #director       ← strategic decisions across all projects
   #efficiency     ← token usage and optimisation reports
-  #approvals      ← human approval requests (✅/❌)
+  #approvals      ← human confirmation gates (✅/❌)
   #alerts         ← system-wide issues requiring attention
 
 📁 proj-{project-name}   ← created by PM Agent on project start
   #director       ← project-level strategy
   #managers       ← PM and Tech Lead coordination
-  #workers        ← researcher, writer, coder outputs
+  #workers        ← worker webhook posts
   #output         ← final deliverables for human review
 ```
 
-**Bot identities — one Discord bot per agent:**
+**Bot identity model:**
 
-| Bot | Role |
-|---|---|
-| 🤖 Director | Strategic decisions |
-| 🤖 PM-Agent | Backlog and sprint management |
-| 🤖 TechLead-Agent | Code review and quality |
-| 🤖 Researcher-Agent | Research tasks |
-| 🤖 Writer-Agent | Content tasks |
-| 🤖 Coder-Agent | Development tasks |
-| 🤖 Auditor | Efficiency monitoring (from efficiency-auditor) |
-| 🤖 Efficiency-Director | Optimisation recommendations (from efficiency-auditor) |
+```
+Persistent bots (3 — always exist):
+  🤖 Director
+  🤖 Auditor
+  🤖 Efficiency-Director
+
+Per-project bots (2 per project — ephemeral):
+  🤖 PM-{project-name}
+  🤖 TechLead-{project-name}
+
+Workers — webhooks only:
+  Posts via dynamic webhook with name and avatar
+  e.g. "Coder-task-042" or "Researcher-task-017"
+  No bot token, no persistent identity
+  Discarded with the worker
+```
+
+The Director never needs direct Discord comms with a front-line worker. That's what managers are for.
 
 ---
 
@@ -139,6 +334,7 @@ State lives in three places — no additional database required.
 | Completed work | Merged PRs |
 | Live context | Discord channels |
 | Token usage | efficiency-auditor module |
+| Estimation history | `projects/estimation-history.json` |
 | Project spec | `projects/{name}/project.json` |
 | Agent config | `config.json` |
 
@@ -153,7 +349,7 @@ Labels:
   priority: low | medium | high | critical
 
 Branch naming: {agent}/{taskId}/{short-description}
-Example: researcher/task-001/ai-agent-news-scrape
+Example: coder/task-001/add-tweet-formatter
 ```
 
 **GitHub Issues as task briefs:**
@@ -173,12 +369,12 @@ Each Issue is the complete world for the worker that picks it up. Issues must in
 ```
 Director → PM             task assignment
 Director → TechLead       task assignment
-Manager → Worker          task assignment
+Manager → Worker          Issue assignment
 ```
 
 **Asynchronous** — sender fires and continues:
 ```
-Manager ← Worker          result
+Manager ← Worker          result (PR opened)
 Director ← Manager        report
 Director/Manager ← Any    insight
 Director/Manager ← Any    escalation
@@ -188,8 +384,37 @@ Director ← Efficiency     recommendation
 **Concurrency rules:**
 - Director fires PM and TechLead simultaneously on project start
 - Workers self-assign from GitHub Issues immediately on task completion
-- No waiting unless explicitly blocked
+- Workers operate concurrently — no waiting unless explicitly blocked
 - Insights and escalations interrupt pipeline immediately
+
+---
+
+## Error Handling
+
+**Category 1 — Worker errors (self-healing first)**
+
+| Error | Handling |
+|---|---|
+| `edit-mismatch` | Self-heal up to 3 attempts, then escalate to PM |
+| `context-insufficient` | Escalate to PM immediately |
+| `model-timeout` | Retry once, then escalate |
+| `output-rejected` | One revision attempt, then escalate |
+
+**Category 2 — Manager errors**
+
+| Error | Handling |
+|---|---|
+| `backlog-empty` | Director notified |
+| `quality-deadlock` | 3 review cycles with no resolution → Director notified |
+
+**Category 3 — System errors (straight to #alerts)**
+
+| Error | Handling |
+|---|---|
+| `model-unavailable` | Ollama down or API key invalid |
+| `github-api-failure` | Can't read/write Issues or PRs |
+| `discord-api-failure` | Can't post to channels |
+| `budget-exceeded` | Token spend limit hit |
 
 ---
 
@@ -332,11 +557,3 @@ payload: {
   discordChannel: "#approvals"
 }
 ```
-
----
-
-## What's next
-
-⬜ Error handling
-⬜ Project spec format
-⬜ Pipeline flow
