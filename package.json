@@ -1,0 +1,28 @@
+{
+  "name": "agent-dev-team",
+  "version": "1.0.0",
+  "description": "An AI agent dev team.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stupeterscoaching/agent-dev-team.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/stupeterscoaching/agent-dev-team/issues"
+  },
+  "homepage": "https://github.com/stupeterscoaching/agent-dev-team#readme",
+  "dependencies": {
+    "@octokit/rest": "^22.0.1",
+    "discord.js": "^14.26.4",
+    "dotenv": "^17.4.2",
+    "ollama": "^0.6.3",
+    "uuid": "^14.0.0"
+  }
+}
