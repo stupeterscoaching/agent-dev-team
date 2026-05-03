@@ -1,0 +1,266 @@
+const { createMessage, MESSAGE_TYPES, PRIORITY_LEVELS, TIERS, AGENTS } = require('../../contracts/base');
+const { createBotClient, postToChannel, waitForApproval } = require('../../discord/client');
+const { Octokit } = require('@octokit/rest');
+const fs = require('fs');
+const path = require('path');
+require('dotenv').config();
+
+/**
+ * PM Agent — ephemeral, spawned per project.
+ * Responsible for:
+ * - Reading estimation history
+ * - Building cost estimates
+ * - Creating GitHub Issues from spec deliverables
+ * - Setting up Discord project channels
+ * - Managing the project backlog
+ */
+
+class PMAgent {
+  constructor(spec, projectChannels) {
+    this.spec = spec;
+    this.projectChannels = projectChannels;
+    this.client = createBotClient(process.env.PM_TOKEN);
+    this.octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+    this.owner = process.env.GITHUB_OWNER;
+    this.repo = process.env.GITHUB_REPO;
+    this.ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
+    this.model = process.env.MANAGER_MODEL || 'llama3.1:8b';
+
+    this.client.once('ready', () => {
+      console.log(`[PM] Online as ${this.client.user.tag}`);
+    });
+  }
+
+  /**
+   * Main entry point — runs the full PM setup sequence.
+   */
+  async run() {
+    await this.postToManagers(`📋 PM Agent online for project: **${this.spec.projectName}**`);
+
+    // Step 1 — Read estimation history
+    const history = this.readEstimationHistory();
+
+    // Step 2 — Build cost estimate with Tech Lead
+    const estimate = await this.buildEstimate(history);
+
+    // Step 3 — Send estimate to #approvals
+    const approved = await this.requestEstimateApproval(estimate);
+    if (!approved) {
+      await this.postToManagers(`❌ Cost estimate rejected. Awaiting revised spec from Director.`);
+      return;
+    }
+
+    // Step 4 — Set up GitHub labels for this project
+    await this.setupGitHubLabels();
+
+    // Step 5 — Create GitHub Issues from spec deliverables
+    await this.createIssues();
+
+    await this.postToManagers(`✅ Project setup complete. Issues created. Workers can begin.`);
+  }
+
+  /**
+   * Reads the estimation history from the repo.
+   * @returns {object} history
+   */
+  readEstimationHistory() {
+    const historyPath = path.join(process.cwd(), 'projects', 'estimation-history.json');
+    if (!fs.existsSync(historyPath)) {
+      return { projects: [] };
+    }
+    return JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+  }
+
+  /**
+   * Builds a cost estimate using the local model and estimation history.
+   * @param {object} history
+   * @returns {object} estimate
+   */
+  async buildEstimate(history) {
+    const relevantHistory = history.projects
+      .filter(p => p.projectType === this.spec.projectType)
+      .slice(-5);
+
+    const prompt = `You are a PM Agent for an AI software development team.
+
+Project spec:
+${JSON.stringify(this.spec, null, 2)}
+
+Relevant estimation history:
+${JSON.stringify(relevantHistory, null, 2)}
+
+Based on the spec and history, provide a cost estimate in JSON format. Return ONLY valid JSON:
+{
+  "hours": 0,
+  "cost": 0,
+  "currency": "${process.env.CURRENCY || 'CAD'}",
+  "breakdown": [
+    { "task": "string", "hours": 0, "cost": 0 }
+  ],
+  "confidence": "low | medium | high",
+  "notes": "string"
+}`;
+
+    const response = await fetch(`${this.ollamaUrl}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: this.model, prompt, stream: false })
+    });
+
+    const data = await response.json();
+    const text = data.response.trim();
+
+    try {
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('No JSON found');
+      return JSON.parse(jsonMatch[0]);
+    } catch (err) {
+      console.error('[PM] Failed to parse estimate JSON:', err);
+      return {
+        hours: 0,
+        cost: 0,
+        currency: process.env.CURRENCY || 'CAD',
+        breakdown: [],
+        confidence: 'low',
+        notes: 'Estimate parsing failed — review manually'
+      };
+    }
+  }
+
+  /**
+   * Posts estimate to #approvals and waits for executive confirmation.
+   * @param {object} estimate
+   * @returns {boolean} approved
+   */
+  async requestEstimateApproval(estimate) {
+    const approvalsChannel = process.env.DISCORD_CHANNEL_APPROVALS;
+    const estimateJson = JSON.stringify(estimate, null, 2);
+
+    const approvalMessage = await this.client.channels
+      .fetch(approvalsChannel)
+      .then(channel => channel.send(
+        `**Cost Estimate — ${this.spec.projectName}**\n\n` +
+        `**Total:** ${estimate.cost} ${estimate.currency}\n` +
+        `**Hours:** ${estimate.hours}\n` +
+        `**Confidence:** ${estimate.confidence}\n\n` +
+        `\`\`\`json\n${estimateJson}\n\`\`\`\n\n` +
+        `React ✅ to approve or ❌ to reject.`
+      ));
+
+    const { waitForApproval } = require('../../discord/client');
+
+    try {
+      return await waitForApproval(this.client, approvalMessage.id, approvalsChannel);
+    } catch (err) {
+      await postToChannel(
+        this.client,
+        process.env.DISCORD_CHANNEL_ALERTS,
+        `⚠️ Cost estimate approval timed out for: ${this.spec.projectName}`
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Sets up GitHub labels for this project.
+   */
+  async setupGitHubLabels() {
+    const labels = [
+      { name: `project:${this.spec.projectName}`, color: '0075ca' },
+      { name: 'tier:worker', color: 'e4e669' },
+      { name: 'tier:manager', color: 'f9d0c4' },
+      { name: 'status:backlog', color: 'd93f0b' },
+      { name: 'status:in-progress', color: '0052cc' },
+      { name: 'status:review', color: 'bfd4f2' },
+      { name: 'status:complete', color: '0e8a16' },
+      { name: 'status:blocked', color: 'b60205' },
+      { name: 'priority:high', color: 'e11d48' },
+      { name: 'priority:medium', color: 'f97316' },
+      { name: 'priority:low', color: '84cc16' },
+    ];
+
+    for (const label of labels) {
+      try {
+        await this.octokit.issues.createLabel({
+          owner: this.owner,
+          repo: this.repo,
+          name: label.name,
+          color: label.color
+        });
+      } catch (err) {
+        // Label may already exist — that's fine
+        if (err.status !== 422) console.error(`[PM] Label error: ${err.message}`);
+      }
+    }
+
+    await this.postToManagers(`🏷️ GitHub labels created for project: ${this.spec.projectName}`);
+  }
+
+  /**
+   * Creates GitHub Issues from spec deliverables.
+   * Each Issue is a complete, self-contained task brief for a worker.
+   */
+  async createIssues() {
+    const { deliverables, projectName, architecture } = this.spec;
+
+    for (const deliverable of deliverables) {
+      const body = `## Task Brief
+
+**Project:** ${projectName}
+**Type:** ${deliverable.type}
+
+## Objective
+${deliverable.description}
+
+## Tech Stack
+- Language: ${architecture.techStack.language}
+- Runtime: ${architecture.techStack.runtime}
+- Packages: ${architecture.techStack.packages.join(', ') || 'none'}
+
+## Acceptance Criteria
+${deliverable.acceptanceCriteria.map(c => `- [ ] ${c}`).join('\n')}
+
+## Instructions
+- Create a branch: \`coder/[issue-number]/${deliverable.name}\`
+- Complete all acceptance criteria
+- Open a PR when done
+- Do not ask for clarification — use your best judgment
+
+## Context
+${JSON.stringify(architecture, null, 2)}`;
+
+      const issue = await this.octokit.issues.create({
+        owner: this.owner,
+        repo: this.repo,
+        title: `[${projectName}] ${deliverable.name}`,
+        body,
+        labels: [
+          `project:${projectName}`,
+          'tier:worker',
+          'status:backlog',
+          'priority:medium'
+        ]
+      });
+
+      await this.postToManagers(`📌 Issue created: #${issue.data.number} — ${deliverable.name}`);
+    }
+  }
+
+  /**
+   * Posts a message to the project's #managers channel.
+   * @param {string} content
+   */
+  async postToManagers(content) {
+    await postToChannel(this.client, this.projectChannels.managers, content);
+  }
+
+  /**
+   * Discards this PM agent — called when project closes.
+   */
+  async discard() {
+    console.log(`[PM] Discarding for project: ${this.spec.projectName}`);
+    await this.client.destroy();
+  }
+}
+
+module.exports = PMAgent;
