@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, WebhookClient } = require('discord.js');
+const { Client, GatewayIntentBits, WebhookClient, Partials } = require('discord.js');
 require('dotenv').config();
 
 /**
@@ -12,7 +12,13 @@ function createBotClient(token) {
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.MessageContent,
-      GatewayIntentBits.DirectMessages
+      GatewayIntentBits.DirectMessages,
+      GatewayIntentBits.GuildMessageReactions
+    ],
+    partials: [
+      Partials.Message,
+      Partials.Channel,
+      Partials.Reaction
     ]
   });
 
@@ -69,16 +75,26 @@ function waitForApproval(client, messageId, channelId, timeoutMs = 86400000) {
       reject(new Error('Approval timed out'));
     }, timeoutMs);
 
-    client.on('messageReactionAdd', async (reaction, user) => {
-      if (user.bot) return;
-      if (reaction.message.id !== messageId) return;
-      if (reaction.message.channelId !== channelId) return;
+    const handler = (message) => {
+      if (message.author.bot) return;
+      if (message.channelId !== channelId) return;
 
-      clearTimeout(timer);
+      const content = message.content.trim().toLowerCase();
 
-      if (reaction.emoji.name === '✅') resolve(true);
-      else if (reaction.emoji.name === '❌') resolve(false);
-    });
+      if (content === 'approve') {
+        console.log(`[Approval] ✅ Approved by ${message.author.tag}`);
+        clearTimeout(timer);
+        client.off('messageCreate', handler);
+        resolve(true);
+      } else if (content === 'reject') {
+        console.log(`[Approval] ❌ Rejected by ${message.author.tag}`);
+        clearTimeout(timer);
+        client.off('messageCreate', handler);
+        resolve(false);
+      }
+    };
+
+    client.on('messageCreate', handler);
   });
 }
 

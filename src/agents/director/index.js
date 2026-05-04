@@ -1,6 +1,5 @@
 const { createMessage, MESSAGE_TYPES, PRIORITY_LEVELS, TIERS, AGENTS } = require('../../contracts/base');
 const { createBotClient, postToChannel, waitForApproval } = require('../../discord/client');
-const Anthropic = require('@anthropic-ai/sdk');
 require('dotenv').config();
 
 /**
@@ -72,15 +71,17 @@ class Director {
     const specJson = JSON.stringify(spec, null, 2);
 
     // Post spec to #approvals for executive confirmation
-    const approvalMessage = await this.client.channels
-      .fetch(approvalsChannel)
-      .then(channel => channel.send(
-        `**New Project Spec — Awaiting Approval**\n\n` +
-        `**Project:** ${spec.spec.projectName}\n` +
-        `**Goal:** ${spec.spec.brief.desiredOutcome}\n\n` +
-        `**Full spec:**\n\`\`\`json\n${specJson}\n\`\`\`\n\n` +
-        `React ✅ to approve or ❌ to reject.`
-      ));
+  const summaryMessage = 
+    `**New Project Spec — Awaiting Approval**\n\n` +
+    `**Project:** ${spec.spec.projectName}\n` +
+    `**Goal:** ${spec.spec.brief.desiredOutcome}\n\n` +
+    `**Deliverables:**\n${spec.spec.deliverables.map(d => `- ${d.name}: ${d.description}`).join('\n')}\n\n` +
+    `**Tech Stack:** ${spec.spec.architecture.techStack.language} / ${spec.spec.architecture.techStack.packages.join(', ')}\n\n` +
+    `Type \`approve\` to confirm or \`reject\` to request changes.`;
+
+  const approvalMessage = await this.client.channels
+    .fetch(approvalsChannel)
+    .then(channel => channel.send(summaryMessage));
 
     await postToChannel(this.client, directorChannel, `Spec sent to #approvals. Waiting for your confirmation.`);
 
