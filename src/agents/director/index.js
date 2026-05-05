@@ -26,7 +26,7 @@ class Director {
     this.model = process.env.DIRECTOR_MODEL || 'llama3.1:8b';
     this.ready = false;
 
-    this.client.once('ready', () => {
+    this.client.once('clientReady', () => {
       console.log(`[Director] Online as ${this.client.user.tag}`);
       this.ready = true;
       this.listen();

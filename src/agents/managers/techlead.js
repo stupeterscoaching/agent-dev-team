@@ -1,5 +1,6 @@
 const { createMessage, MESSAGE_TYPES, PRIORITY_LEVELS, TIERS, AGENTS } = require('../../contracts/base');
 const { createBotClient, postToChannel } = require('../../discord/client');
+process.env.NODE_DEBUG = '';
 const { Octokit } = require('@octokit/rest');
 // Load env manually to bypass dotenvx interference
 const fs = require('fs');
@@ -35,7 +36,7 @@ class TechLeadAgent {
   this.model = process.env.MANAGER_MODEL || 'llama3.1:8b';
 
   this.ready = new Promise((resolve) => {
-    this.client.once('ready', () => {
+    this.client.once('clientReady', () => {
       console.log(`[TechLead] Online as ${this.client.user.tag}`);
       resolve();
     });

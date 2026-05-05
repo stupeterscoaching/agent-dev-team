@@ -11,6 +11,8 @@ envFile.split('\n').forEach(line => {
     if (key && !key.startsWith('#')) process.env[key] = val;
   }
 });
+// Suppress Octokit request logging
+process.env.NODE_DEBUG = '';
 
 const { createMessage, MESSAGE_TYPES, PRIORITY_LEVELS, TIERS, AGENTS } = require('../../contracts/base');
 const { createBotClient, postToChannel, waitForApproval } = require('../../discord/client');
@@ -38,7 +40,7 @@ class PMAgent {
   this.model = process.env.MANAGER_MODEL || 'llama3.1:8b';
 
   this.ready = new Promise((resolve) => {
-    this.client.once('ready', () => {
+    this.client.once('clientReady', () => {
       console.log(`[PM] Online as ${this.client.user.tag}`);
       resolve();
     });
