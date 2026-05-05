@@ -127,8 +127,9 @@ async buildSpec(brief) {
     })
   });
   const nameData = await nameResponse.json();
-  const projectName = nameData.response.trim().replace(/[^a-z0-9-]/g, '').slice(0, 30) || 'new-project';
-
+  const rawName = nameData.response.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 30);
+  const projectName = rawName || 'new-project';
+  console.log(`[Director] Project name: ${projectName}`);
   const goalResponse = await fetch(`${this.ollamaUrl}/api/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

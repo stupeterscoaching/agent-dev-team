@@ -71,6 +71,7 @@ class Pipeline {
 
   async watchIssues(projectName) {
     console.log(`[Pipeline] Watching Issues for project: ${projectName}`);
+    console.log(`[Pipeline] Polling label: project:${projectName},status:backlog`);
     const project = this.activeProjects[projectName];
 
     const poll = async () => {
