@@ -95,7 +95,7 @@ class Pipeline {
       setTimeout(poll, 30000);
     };
 
-    poll();
+    setTimeout(poll, 5000);
   }
 
   async spawnWorker(issue, projectChannels) {
