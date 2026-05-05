@@ -74,6 +74,8 @@ class Pipeline {
     const project = this.activeProjects[projectName];
 
     const poll = async () => {
+        console.log(`[Pipeline] Polling for Issues with label: project:${projectName},status:backlog`);
+
       try {
         const { data: issues } = await this.octokit.issues.listForRepo({
           owner: this.owner,
