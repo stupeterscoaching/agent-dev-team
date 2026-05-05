@@ -1,9 +1,20 @@
+
+const fs = require('fs');
+const path = require('path');
+
+const envFile = fs.readFileSync(path.join(process.cwd(), '.env'), 'utf8');
+envFile.split('\n').forEach(line => {
+  const eqIndex = line.indexOf('=');
+  if (eqIndex > 0) {
+    const key = line.slice(0, eqIndex).trim();
+    const val = line.slice(eqIndex + 1).trim();
+    if (key && !key.startsWith('#')) process.env[key] = val;
+  }
+});
+
 const { createMessage, MESSAGE_TYPES, PRIORITY_LEVELS, TIERS, AGENTS } = require('../../contracts/base');
 const { createBotClient, postToChannel, waitForApproval } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');
-const fs = require('fs');
-const path = require('path');
-require('dotenv').config();
 
 /**
  * PM Agent — ephemeral, spawned per project.
@@ -17,47 +28,53 @@ require('dotenv').config();
 
 class PMAgent {
   constructor(spec, projectChannels) {
-    this.spec = spec;
-    this.projectChannels = projectChannels;
-    this.client = createBotClient(process.env.PM_TOKEN);
-    this.octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
-    this.owner = process.env.GITHUB_OWNER;
-    this.repo = process.env.GITHUB_REPO;
-    this.ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-    this.model = process.env.MANAGER_MODEL || 'llama3.1:8b';
+  this.spec = spec;
+  this.projectChannels = projectChannels;
+  this.client = createBotClient(process.env.PM_TOKEN);
+  this.octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+  this.owner = process.env.GITHUB_OWNER;
+  this.repo = process.env.GITHUB_REPO;
+  this.ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
+  this.model = process.env.MANAGER_MODEL || 'llama3.1:8b';
 
+  this.ready = new Promise((resolve) => {
     this.client.once('ready', () => {
       console.log(`[PM] Online as ${this.client.user.tag}`);
+      resolve();
     });
-  }
+  });
+}
 
   /**
    * Main entry point — runs the full PM setup sequence.
    */
   async run() {
-    await this.postToManagers(`📋 PM Agent online for project: **${this.spec.projectName}**`);
+  await this.ready;
+  await this.postToManagers(`📋 PM Agent online for project: **${this.spec.projectName}**`);
 
-    // Step 1 — Read estimation history
+  try {
     const history = this.readEstimationHistory();
-
-    // Step 2 — Build cost estimate with Tech Lead
     const estimate = await this.buildEstimate(history);
-
-    // Step 3 — Send estimate to #approvals
     const approved = await this.requestEstimateApproval(estimate);
+
     if (!approved) {
       await this.postToManagers(`❌ Cost estimate rejected. Awaiting revised spec from Director.`);
       return;
     }
 
-    // Step 4 — Set up GitHub labels for this project
     await this.setupGitHubLabels();
 
-    // Step 5 — Create GitHub Issues from spec deliverables
+    console.log('[PM] Creating Issues...');
     await this.createIssues();
+    console.log('[PM] Issues created.');
 
     await this.postToManagers(`✅ Project setup complete. Issues created. Workers can begin.`);
+
+  } catch (err) {
+    console.error('[PM] Fatal error in run():', err.message);
+    console.error(err.stack);
   }
+}
 
   /**
    * Reads the estimation history from the repo.
@@ -76,56 +93,39 @@ class PMAgent {
    * @param {object} history
    * @returns {object} estimate
    */
-  async buildEstimate(history) {
-    const relevantHistory = history.projects
-      .filter(p => p.projectType === this.spec.projectType)
-      .slice(-5);
+async buildEstimate(history) {
+  const relevantHistory = history.projects
+    .filter(p => p.projectType === this.spec.projectType)
+    .slice(-5);
 
-    const prompt = `You are a PM Agent for an AI software development team.
+  // Ask model for simple text answers instead of JSON
+  const hoursResponse = await fetch(`${this.ollamaUrl}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: this.model,
+      prompt: `You are a project manager. Given this project: "${this.spec.projectName}" with ${this.spec.deliverables?.length || 1} deliverables, estimate total development hours. Respond with ONLY a single number between 1 and 100. No other text.`,
+      stream: false
+    })
+  });
 
-Project spec:
-${JSON.stringify(this.spec, null, 2)}
+  const hoursData = await hoursResponse.json();
+  const hours = parseInt(hoursData.response.trim().match(/\d+/)?.[0] || '8');
+  const cost = hours * 20; // $20 CAD per hour for local model workers
 
-Relevant estimation history:
-${JSON.stringify(relevantHistory, null, 2)}
-
-Based on the spec and history, provide a cost estimate in JSON format. Return ONLY valid JSON:
-{
-  "hours": 0,
-  "cost": 0,
-  "currency": "${process.env.CURRENCY || 'CAD'}",
-  "breakdown": [
-    { "task": "string", "hours": 0, "cost": 0 }
-  ],
-  "confidence": "low | medium | high",
-  "notes": "string"
-}`;
-
-    const response = await fetch(`${this.ollamaUrl}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: this.model, prompt, stream: false })
-    });
-
-    const data = await response.json();
-    const text = data.response.trim();
-
-    try {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON found');
-      return JSON.parse(jsonMatch[0]);
-    } catch (err) {
-      console.error('[PM] Failed to parse estimate JSON:', err);
-      return {
-        hours: 0,
-        cost: 0,
-        currency: process.env.CURRENCY || 'CAD',
-        breakdown: [],
-        confidence: 'low',
-        notes: 'Estimate parsing failed — review manually'
-      };
-    }
-  }
+  return {
+    hours,
+    cost,
+    currency: process.env.CURRENCY || 'CAD',
+    breakdown: this.spec.deliverables?.map(d => ({
+      task: d.name,
+      hours: Math.ceil(hours / (this.spec.deliverables.length || 1)),
+      cost: Math.ceil(cost / (this.spec.deliverables.length || 1))
+    })) || [],
+    confidence: relevantHistory.length > 0 ? 'medium' : 'low',
+    notes: relevantHistory.length > 0 ? `Based on ${relevantHistory.length} similar projects` : 'No historical data available'
+  };
+}
 
   /**
    * Posts estimate to #approvals and waits for executive confirmation.

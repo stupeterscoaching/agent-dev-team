@@ -1,7 +1,18 @@
 const { createMessage, MESSAGE_TYPES, PRIORITY_LEVELS, TIERS, AGENTS } = require('../../contracts/base');
 const { createBotClient, postToChannel } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');
-require('dotenv').config();
+// Load env manually to bypass dotenvx interference
+const fs = require('fs');
+const path = require('path');
+const envFile = fs.readFileSync(path.join(process.cwd(), '.env'), 'utf8');
+envFile.split('\n').forEach(line => {
+  const eqIndex = line.indexOf('=');
+  if (eqIndex > 0) {
+    const key = line.slice(0, eqIndex).trim();
+    const val = line.slice(eqIndex + 1).trim();
+    if (key && !key.startsWith('#')) process.env[key] = val;
+  }
+});
 
 /**
  * Tech Lead Agent — ephemeral, spawned per project alongside PM.
@@ -14,25 +25,28 @@ require('dotenv').config();
 
 class TechLeadAgent {
   constructor(spec, projectChannels) {
-    this.spec = spec;
-    this.projectChannels = projectChannels;
-    this.client = createBotClient(process.env.TECHLEAD_TOKEN);
-    this.octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
-    this.owner = process.env.GITHUB_OWNER;
-    this.repo = process.env.GITHUB_REPO;
-    this.ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-    this.model = process.env.MANAGER_MODEL || 'llama3.1:8b';
+  this.spec = spec;
+  this.projectChannels = projectChannels;
+  this.client = createBotClient(process.env.TECHLEAD_TOKEN);
+  this.octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+  this.owner = process.env.GITHUB_OWNER;
+  this.repo = process.env.GITHUB_REPO;
+  this.ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
+  this.model = process.env.MANAGER_MODEL || 'llama3.1:8b';
 
+  this.ready = new Promise((resolve) => {
     this.client.once('ready', () => {
       console.log(`[TechLead] Online as ${this.client.user.tag}`);
-      this.listen();
+      resolve();
     });
-  }
+  });
+}
 
   /**
    * Main entry point — defines coding standards and starts listening for PRs.
    */
   async run() {
+    await this.ready;
     await this.postToManagers(`🔧 Tech Lead online for project: **${this.spec.projectName}**`);
     await this.defineCodingStandards();
     await this.postToManagers(`📐 Coding standards set. Watching for PRs.`);

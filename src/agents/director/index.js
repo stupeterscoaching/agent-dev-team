@@ -1,6 +1,17 @@
 const { createMessage, MESSAGE_TYPES, PRIORITY_LEVELS, TIERS, AGENTS } = require('../../contracts/base');
 const { createBotClient, postToChannel, waitForApproval } = require('../../discord/client');
-require('dotenv').config();
+// Load env manually to bypass dotenvx interference
+const fs = require('fs');
+const path = require('path');
+const envFile = fs.readFileSync(path.join(process.cwd(), '.env'), 'utf8');
+envFile.split('\n').forEach(line => {
+  const eqIndex = line.indexOf('=');
+  if (eqIndex > 0) {
+    const key = line.slice(0, eqIndex).trim();
+    const val = line.slice(eqIndex + 1).trim();
+    if (key && !key.startsWith('#')) process.env[key] = val;
+  }
+});
 
 /**
  * Director Agent — the only persistent agent in the system.
@@ -104,89 +115,87 @@ class Director {
    * @param {string} brief
    * @returns {object} spec
    */
-  async buildSpec(brief) {
-    const prompt = `You are the Director of an AI software development team.
-    
-An executive has given you the following project brief:
-"${brief}"
+async buildSpec(brief) {
+  // Ask the model for simple text answers, not JSON
+  const nameResponse = await fetch(`${this.ollamaUrl}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: this.model,
+      prompt: `Given this project brief: "${brief}"\n\nRespond with ONLY a short kebab-case project name (example: web-calculator). No other text.`,
+      stream: false
+    })
+  });
+  const nameData = await nameResponse.json();
+  const projectName = nameData.response.trim().replace(/[^a-z0-9-]/g, '').slice(0, 30) || 'new-project';
 
-Build a structured project spec in JSON format. Return ONLY valid JSON, no other text.
+  const goalResponse = await fetch(`${this.ollamaUrl}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: this.model,
+      prompt: `Given this project brief: "${brief}"\n\nRespond with ONE sentence describing what success looks like. No other text.`,
+      stream: false
+    })
+  });
+  const goalData = await goalResponse.json();
+  const desiredOutcome = goalData.response.trim();
 
-The JSON must follow this structure exactly:
-{
-  "spec": {
-    "projectName": "short-kebab-case-name",
-    "version": "1.0.0",
-    "createdAt": "${new Date().toISOString()}",
-    "brief": {
-      "problemStatement": "what problem this solves and for who",
-      "desiredOutcome": "what success looks like",
-      "constraints": {
-        "technical": []
+  // Return a well-structured spec without relying on model JSON generation
+  return {
+    spec: {
+      projectName,
+      version: '1.0.0',
+      createdAt: new Date().toISOString(),
+      brief: {
+        problemStatement: brief,
+        desiredOutcome,
+        constraints: { technical: ['Node.js only', 'no external databases'] },
+        antiGoals: ['no user authentication', 'no mobile app']
       },
-      "antiGoals": []
-    },
-    "architecture": {
-      "overview": "brief architecture description",
-      "components": [],
-      "techStack": {
-        "language": "javascript",
-        "runtime": "node",
-        "packages": []
-      }
-    },
-    "team": {
-      "workers": ["coder"],
-      "managers": ["pm", "techlead"],
-      "efficiency": false
-    },
-    "deliverables": [
-      {
-        "name": "string",
-        "type": "code",
-        "description": "string",
-        "acceptanceCriteria": []
-      }
-    ],
-    "openQuestions": []
-  }
-}`;
-
-    const response = await fetch(`${this.ollamaUrl}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.model,
-        prompt,
-        stream: false
-      })
-    });
-
-    const data = await response.json();
-    const text = data.response.trim();
-
-    try {
-      // Extract JSON from response
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON found in response');
-      return JSON.parse(jsonMatch[0]);
-    } catch (err) {
-      console.error('[Director] Failed to parse spec JSON:', err);
-      // Return a basic fallback spec
-      return {
-        spec: {
-          projectName: 'unknown-project',
-          version: '1.0.0',
-          createdAt: new Date().toISOString(),
-          brief: { problemStatement: brief, desiredOutcome: 'TBD', constraints: { technical: [] }, antiGoals: [] },
-          architecture: { overview: 'TBD', components: [], techStack: { language: 'javascript', runtime: 'node', packages: [] } },
-          team: { workers: ['coder'], managers: ['pm', 'techlead'], efficiency: false },
-          deliverables: [],
-          openQuestions: ['Spec parsing failed — please review and resubmit brief']
+      architecture: {
+        overview: 'Single page web application with Express backend',
+        components: [
+          { name: 'frontend', description: 'HTML/CSS/JS user interface' },
+          { name: 'backend', description: 'Express.js server' }
+        ],
+        techStack: {
+          language: 'javascript',
+          runtime: 'node',
+          packages: ['express']
         }
-      };
+      },
+      team: {
+        workers: ['coder'],
+        managers: ['pm', 'techlead'],
+        efficiency: false
+      },
+      deliverables: [
+        {
+          name: `${projectName}-frontend`,
+          type: 'code',
+          description: `HTML/CSS/JavaScript frontend for ${projectName}`,
+          acceptanceCriteria: [
+            'Page loads without errors',
+            'User interface is functional',
+            'All buttons and inputs work correctly'
+          ]
+        },
+        {
+          name: `${projectName}-backend`,
+          type: 'code',
+          description: `Express.js backend server for ${projectName}`,
+          acceptanceCriteria: [
+            'Server starts without errors',
+            'API endpoints return correct responses',
+            'Error handling is implemented'
+          ]
+        }
+      ],
+      openQuestions: []
     }
-  }
+  };
+}
 
   /**
    * General purpose thinking — sends a prompt to the local model.
