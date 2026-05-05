@@ -1,5 +1,6 @@
 const { createMessage, MESSAGE_TYPES, PRIORITY_LEVELS, TIERS, AGENTS } = require('../../contracts/base');
 const { createWebhookClient, postAsWorker } = require('../../discord/client');
+process.env.NODE_DEBUG = '';
 const { Octokit } = require('@octokit/rest');
 // Load env manually to bypass dotenvx interference
 const fs = require('fs');
