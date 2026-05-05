@@ -50,12 +50,14 @@ class Pipeline {
     this.activeProjects[projectName].pm = pm;
     this.activeProjects[projectName].techLead = techLead;
 
-    console.log(`[Pipeline] PM and Tech Lead instantiated for: ${projectName}`);
+    techLead.run().catch(err => console.error('[TechLead] Error:', err.message));
 
-    await Promise.all([
-  pm.run().catch(err => console.error('[PM] Error:', err.message)),
-  techLead.run().catch(err => console.error('[TechLead] Error:', err.message))
-]);
+    pm.run()
+    .then(() => {
+      console.log(`[Pipeline] PM finished. Starting Issue watcher for: ${projectName}`);
+      this.watchIssues(projectName);
+    })
+    .catch(err => console.error('[PM] Error:', err.message));
   }
 
   async createProjectChannels(projectName) {
@@ -71,9 +73,12 @@ class Pipeline {
 
   async watchIssues(projectName) {
     console.log(`[Pipeline] Watching Issues for project: ${projectName}`);
+    console.log(`[Pipeline] Polling label: project:${projectName},status:backlog`);
     const project = this.activeProjects[projectName];
 
     const poll = async () => {
+        console.log(`[Pipeline] Polling for Issues with label: project:${projectName},status:backlog`);
+
       try {
         const { data: issues } = await this.octokit.issues.listForRepo({
           owner: this.owner,
@@ -92,7 +97,7 @@ class Pipeline {
       setTimeout(poll, 30000);
     };
 
-    poll();
+    setTimeout(poll, 5000);
   }
 
   async spawnWorker(issue, projectChannels) {

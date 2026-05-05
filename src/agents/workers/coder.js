@@ -166,6 +166,8 @@ Return ONLY valid JSON in this format — no other text:
           } catch (e) {
             // File doesn't exist yet — that's fine
           }
+          // Sanitize filename — remove leading ./
+          file.filename = file.filename.replace(/^\.\//, '');
 
           // Commit the file
           await this.octokit.repos.createOrUpdateFileContents({
@@ -184,7 +186,7 @@ Return ONLY valid JSON in this format — no other text:
         } catch (err) {
           await this.log(`⚠️ Commit failed for ${file.filename} (attempt ${attempt}): ${err.message}`);
           if (attempt === this.maxAttempts) {
-            throw new Error(`edit-mismatch: failed to commit ${file.filename} after ${this.maxAttempts} attempts`);
+            throw new Error(`edit-mismatch: failed to commit ${file.filename} after ${this.maxAttempts} attempts`, { cause: err });
           }
         }
       }
