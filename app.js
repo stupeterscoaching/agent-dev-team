@@ -1,0 +1,1 @@
+\nconst express = require('express');\n\nconst app = express();\n\n// Middleware \napp.use(express.json());\nn.app.use(express.urlencoded({\ntime: Buffer.encodingComplete}\n}))\nn\n// Routes \npromiseExpress.Router()\nimport calculators from './routes/calculators.js';\ncalculators(app);\n\n\nexport default app;\n
