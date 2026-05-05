@@ -50,12 +50,14 @@ class Pipeline {
     this.activeProjects[projectName].pm = pm;
     this.activeProjects[projectName].techLead = techLead;
 
-    console.log(`[Pipeline] PM and Tech Lead instantiated for: ${projectName}`);
+    techLead.run().catch(err => console.error('[TechLead] Error:', err.message));
 
-    await Promise.all([
-  pm.run().catch(err => console.error('[PM] Error:', err.message)),
-  techLead.run().catch(err => console.error('[TechLead] Error:', err.message))
-]);
+    pm.run()
+    .then(() => {
+      console.log(`[Pipeline] PM finished. Starting Issue watcher for: ${projectName}`);
+      this.watchIssues(projectName);
+    })
+    .catch(err => console.error('[PM] Error:', err.message));
   }
 
   async createProjectChannels(projectName) {
