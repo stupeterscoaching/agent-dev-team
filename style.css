@@ -1,0 +1,1 @@
+body{font-family: Arial, sans-serif;} .calculator input{width: 50%; margin: 10px; padding: 10px; border: 1px solid #ccc;} .calculator button{width: 20%; margin: 10px; padding: 10px; border: None; background-color: #4CAF50; color: white; cursor: pointer;} .calculator button:hover{background-color: #3e8e41;} .calculator input:focus{outline: none; border: 1px solid #aaa;}
