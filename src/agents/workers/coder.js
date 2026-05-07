@@ -25,12 +25,12 @@ envFile.split('\n').forEach(line => {
  */
 
 class CoderAgent {
-  constructor(issue, projectChannels) {
+  constructor(issue, projectChannels, projectRepo) {
     this.issue = issue;
     this.projectChannels = projectChannels;
     this.octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
-    this.owner = process.env.GITHUB_OWNER;
-    this.repo = process.env.GITHUB_REPO;
+    this.owner = projectRepo?.owner || process.env.GITHUB_OWNER;
+    this.repo = projectRepo?.repo || process.env.GITHUB_REPO;
     this.ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
     this.model = process.env.WORKER_MODEL || 'llama3.2:latest';
     this.agentName = `Coder-task-${issue.number}`;

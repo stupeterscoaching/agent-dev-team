@@ -276,8 +276,8 @@ ${deliverable.acceptanceCriteria.map(c => `- [ ] ${c}`).join('\n')}
 ${JSON.stringify(architecture, null, 2)}`;
 
       const issue = await this.octokit.issues.create({
-        owner: this.owner,
-        repo: this.repo,
+        owner: this.projectRepo.owner,
+        repo: this.projectRepo.repo,
         title: `[${projectName}] ${deliverable.name}`,
         body,
         labels: [
