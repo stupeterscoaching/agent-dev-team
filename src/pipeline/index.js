@@ -3,9 +3,9 @@ const PMAgent = require('../agents/managers/pm');
 const TechLeadAgent = require('../agents/managers/techlead');
 const CoderAgent = require('../agents/workers/coder');
 const { Octokit } = require('@octokit/rest');
-// Load env manually to bypass dotenvx interference
 const fs = require('fs');
 const path = require('path');
+
 const envFile = fs.readFileSync(path.join(process.cwd(), '.env'), 'utf8');
 envFile.split('\n').forEach(line => {
   const eqIndex = line.indexOf('=');
@@ -52,10 +52,18 @@ class Pipeline {
 
     console.log(`[Pipeline] PM and Tech Lead instantiated for: ${projectName}`);
 
-    await Promise.all([
-  pm.run().catch(err => console.error('[PM] Error:', err.message)),
-  techLead.run().catch(err => console.error('[TechLead] Error:', err.message))
-]);
+    // Tech Lead fires immediately — no approval needed
+    techLead.run().catch(err => console.error('[TechLead] Error:', err.message));
+
+    // PM runs, then starts watchers when done
+    pm.run()
+      .then(() => {
+        console.log(`[Pipeline] PM finished. Starting watchers for: ${projectName}`);
+        const projectRepo = pm.projectRepo;
+        this.watchIssues(projectName, projectRepo);
+        this.watchPRs(projectName, projectRepo);
+      })
+      .catch(err => console.error('[PM] Error:', err.message));
   }
 
   async createProjectChannels(projectName) {
@@ -69,11 +77,12 @@ class Pipeline {
     };
   }
 
-  async watchIssues(projectName) {
+  async watchIssues(projectName, projectRepo) {
     console.log(`[Pipeline] Watching Issues for project: ${projectName}`);
     const project = this.activeProjects[projectName];
 
     const poll = async () => {
+      console.log(`[Pipeline] Polling for Issues with label: project:${projectName},status:backlog`);
       try {
         const { data: issues } = await this.octokit.issues.listForRepo({
           owner: this.owner,
@@ -82,8 +91,10 @@ class Pipeline {
           labels: `project:${projectName},status:backlog`
         });
 
+        console.log(`[Pipeline] Found ${issues.length} Issues with status:backlog`);
+
         for (const issue of issues) {
-          await this.spawnWorker(issue, project.channels);
+          await this.spawnWorker(issue, project.channels, projectRepo);
         }
       } catch (err) {
         console.error(`[Pipeline] Issue watch error: ${err.message}`);
@@ -92,10 +103,44 @@ class Pipeline {
       setTimeout(poll, 30000);
     };
 
-    poll();
+    // Wait 5 seconds before first poll to let GitHub index the new Issues
+    setTimeout(poll, 5000);
   }
 
-  async spawnWorker(issue, projectChannels) {
+  async watchPRs(projectName, projectRepo) {
+    console.log(`[Pipeline] Watching PRs for project: ${projectName}`);
+    const project = this.activeProjects[projectName];
+    const reviewedPRs = new Set();
+
+    const poll = async () => {
+      try {
+        // Watch PRs in the project repo, not agent-dev-team
+        const owner = projectRepo?.owner || this.owner;
+        const repo = projectRepo?.repo || this.repo;
+
+        const { data: prs } = await this.octokit.pulls.list({
+          owner,
+          repo,
+          state: 'open'
+        });
+
+        for (const pr of prs) {
+          if (reviewedPRs.has(pr.number)) continue;
+          reviewedPRs.add(pr.number);
+          console.log(`[Pipeline] PR found for review: #${pr.number}`);
+          await project.techLead.reviewPR(pr.number, projectRepo);
+        }
+      } catch (err) {
+        console.error(`[Pipeline] PR watch error: ${err.message}`);
+      }
+
+      setTimeout(poll, 30000);
+    };
+
+    setTimeout(poll, 10000);
+  }
+
+  async spawnWorker(issue, projectChannels, projectRepo) {
     console.log(`[Pipeline] Spawning worker for Issue #${issue.number}: ${issue.title}`);
 
     await this.octokit.issues.update({
@@ -105,7 +150,7 @@ class Pipeline {
       labels: ['status:in-progress']
     });
 
-    const worker = new CoderAgent(issue, projectChannels);
+    const worker = new CoderAgent(issue, projectChannels, projectRepo);
     await worker.run();
   }
 }
