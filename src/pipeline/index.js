@@ -79,23 +79,33 @@ class Pipeline {
 
   async watchIssues(projectName, projectRepo) {
     console.log(`[Pipeline] Watching Issues for project: ${projectName}`);
+    console.log(`[Pipeline] Project repo: ${JSON.stringify(projectRepo)}`);
     const project = this.activeProjects[projectName];
 
+    const spawnedIssues = new Set();
+    
     const poll = async () => {
-      console.log(`[Pipeline] Polling for Issues with label: project:${projectName},status:backlog`);
+      console.log(`[Pipeline] Polling project repo for open Issues...`);
       try {
+        const owner = projectRepo?.owner || this.owner;
+        const repo = projectRepo?.repo || this.repo;
+
         const { data: issues } = await this.octokit.issues.listForRepo({
-          owner: this.owner,
-          repo: this.repo,
-          state: 'open',
-          labels: `project:${projectName},status:backlog`
+            owner,
+            repo,
+            state: 'open'
         });
 
-        console.log(`[Pipeline] Found ${issues.length} Issues with status:backlog`);
+        console.log(`[Pipeline] Found ${issues.length} open Issues in ${owner}/${repo}`);
+            if (issues.length > 0) {
+                issues.forEach(i => console.log(`  - #${i.number}: ${i.title}`));
+            }
 
-        for (const issue of issues) {
-          await this.spawnWorker(issue, project.channels, projectRepo);
-        }
+            for (const issue of issues) {
+            if (spawnedIssues.has(issue.number)) continue;
+            spawnedIssues.add(issue.number);
+            await this.spawnWorker(issue, project.channels, projectRepo);
+            }
       } catch (err) {
         console.error(`[Pipeline] Issue watch error: ${err.message}`);
       }
@@ -142,12 +152,16 @@ class Pipeline {
 
   async spawnWorker(issue, projectChannels, projectRepo) {
     console.log(`[Pipeline] Spawning worker for Issue #${issue.number}: ${issue.title}`);
+    console.log(`[Pipeline] spawnWorker projectRepo: ${JSON.stringify(projectRepo)}`);
+
+    const issueOwner = projectRepo?.owner || this.owner;
+    const issueRepo = projectRepo?.repo || this.repo;
 
     await this.octokit.issues.update({
-      owner: this.owner,
-      repo: this.repo,
-      issue_number: issue.number,
-      labels: ['status:in-progress']
+    owner: issueOwner,
+    repo: issueRepo,
+    issue_number: issue.number,
+    labels: ['status:in-progress']
     });
 
     const worker = new CoderAgent(issue, projectChannels, projectRepo);
