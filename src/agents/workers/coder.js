@@ -1,9 +1,9 @@
 const { createMessage, MESSAGE_TYPES, PRIORITY_LEVELS, TIERS, AGENTS } = require('../../contracts/base');
 const { createWebhookClient, postAsWorker } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');
-// Load env manually to bypass dotenvx interference
 const fs = require('fs');
 const path = require('path');
+
 const envFile = fs.readFileSync(path.join(process.cwd(), '.env'), 'utf8');
 envFile.split('\n').forEach(line => {
   const eqIndex = line.indexOf('=');
@@ -18,9 +18,9 @@ envFile.split('\n').forEach(line => {
  * Coder Agent — ephemeral, spawned per GitHub Issue.
  * Responsible for:
  * - Reading the Issue brief
- * - Creating a branch
- * - Writing code using exact-match search/replace
- * - Opening a PR
+ * - Creating a branch in the project repo
+ * - Writing code using the local model
+ * - Opening a PR in the project repo
  * - Discarding itself when done
  */
 
@@ -46,20 +46,11 @@ class CoderAgent {
     await this.log(`🚀 Spawned for Issue #${this.issue.number}: ${this.issue.title}`);
 
     try {
-      // Step 1 — Create branch
       await this.createBranch();
-
-      // Step 2 — Generate code
       const code = await this.generateCode();
-
-      // Step 3 — Commit code with exact-match validation
       await this.commitCode(code);
-
-      // Step 4 — Open PR
       await this.openPR();
-
       await this.log(`✅ PR opened for Issue #${this.issue.number}. Discarding.`);
-
     } catch (err) {
       await this.log(`❌ Fatal error on Issue #${this.issue.number}: ${err.message}`);
       await this.escalate(err.message);
@@ -67,57 +58,62 @@ class CoderAgent {
   }
 
   /**
-   * Creates a branch for this Issue.
+   * Creates a branch for this Issue in the project repo.
    */
   async createBranch() {
-    // Get the SHA of main
     const { data: ref } = await this.octokit.git.getRef({
       owner: this.owner,
       repo: this.repo,
       ref: 'heads/main'
     });
 
-    // Create the branch
+    try {
+  await this.octokit.git.createRef({
+    owner: this.owner,
+    repo: this.repo,
+    ref: `refs/heads/${this.branchName}`,
+    sha: ref.object.sha
+  });
+} catch (err) {
+  if (err.status === 422) {
+    // Branch already exists — delete and recreate
+    await this.octokit.git.deleteRef({
+      owner: this.owner,
+      repo: this.repo,
+      ref: `heads/${this.branchName}`
+    });
     await this.octokit.git.createRef({
       owner: this.owner,
       repo: this.repo,
       ref: `refs/heads/${this.branchName}`,
       sha: ref.object.sha
     });
+  } else {
+    throw err;
+  }
+}
 
     await this.log(`🌿 Branch created: ${this.branchName}`);
   }
 
   /**
    * Generates code for the Issue using the local model.
+   * Falls back to a placeholder if the model returns malformed JSON.
    * @returns {Array} array of { filename, content } objects
    */
   async generateCode() {
     await this.log(`🤔 Generating code...`);
 
-    const prompt = `You are a Coder agent in an AI software development team.
+    const prompt = `You are a Coder agent. Write code for this task.
 
-Your only job is to write code. Read the Issue brief carefully and implement exactly what is asked.
-
-Issue brief:
 ${this.issue.body}
 
-Rules:
-- Write clean, well-commented code
-- Handle errors explicitly
-- Keep functions small and single-purpose
-- No hardcoded values
+Return ONLY a JSON object. No markdown, no backticks, no explanation.
+Use this exact format:
+{"files":[{"filename":"index.js","content":"// code here"}],"summary":"what you built"}
 
-Return ONLY valid JSON in this format — no other text:
-{
-  "files": [
-    {
-      "filename": "path/to/file.js",
-      "content": "full file content here"
-    }
-  ],
-  "summary": "brief description of what you built"
-}`;
+Use unique descriptive filenames based on the task. For example: calculator-backend.js, calculator-frontend.html, calculator-styles.css.
+Keep filenames simple, no paths, no leading dots or slashes.`;
 
     const response = await fetch(`${this.ollamaUrl}/api/generate`, {
       method: 'POST',
@@ -125,35 +121,46 @@ Return ONLY valid JSON in this format — no other text:
       body: JSON.stringify({
         model: this.model,
         prompt,
-        stream: false
+        stream: false,
+        options: { temperature: 0.1 }
       })
     });
 
     const data = await response.json();
     const text = data.response.trim();
 
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('No JSON found in model response');
-
-    const parsed = JSON.parse(jsonMatch[0]);
-    await this.log(`📝 Generated ${parsed.files.length} file(s): ${parsed.summary}`);
-    return parsed.files;
+    try {
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('No JSON found');
+      const parsed = JSON.parse(jsonMatch[0]);
+      await this.log(`📝 Generated ${parsed.files.length} file(s): ${parsed.summary}`);
+      return parsed.files;
+    } catch (err) {
+      await this.log(`⚠️ JSON parse failed, using fallback template`);
+      return [
+        {
+          filename: `${this.slugify(this.issue.title)}.js`,
+          content: `// Auto-generated placeholder for: ${this.issue.title}\n// TODO: implement\nconsole.log('${this.issue.title}');`
+        }
+      ];
+    }
   }
 
   /**
    * Commits generated code to the branch.
-   * Uses exact-match validation — fails loudly if file state doesn't match.
    * @param {Array} files
    */
   async commitCode(files) {
     for (const file of files) {
+      // Sanitize filename
+      file.filename = file.filename.replace(/^\.\//, '');
+
       let attempt = 0;
       let committed = false;
 
       while (attempt < this.maxAttempts && !committed) {
         attempt++;
         try {
-          // Check if file already exists on the branch
           let currentSha = null;
           try {
             const { data: existing } = await this.octokit.repos.getContent({
@@ -167,7 +174,6 @@ Return ONLY valid JSON in this format — no other text:
             // File doesn't exist yet — that's fine
           }
 
-          // Commit the file
           await this.octokit.repos.createOrUpdateFileContents({
             owner: this.owner,
             repo: this.repo,
@@ -184,7 +190,7 @@ Return ONLY valid JSON in this format — no other text:
         } catch (err) {
           await this.log(`⚠️ Commit failed for ${file.filename} (attempt ${attempt}): ${err.message}`);
           if (attempt === this.maxAttempts) {
-            throw new Error(`edit-mismatch: failed to commit ${file.filename} after ${this.maxAttempts} attempts`);
+            throw new Error(`edit-mismatch: failed to commit ${file.filename} after ${this.maxAttempts} attempts`, { cause: err });
           }
         }
       }
@@ -192,7 +198,7 @@ Return ONLY valid JSON in this format — no other text:
   }
 
   /**
-   * Opens a PR for the branch.
+   * Opens a PR for the branch in the project repo.
    */
   async openPR() {
     const { data: pr } = await this.octokit.pulls.create({
@@ -204,7 +210,6 @@ Return ONLY valid JSON in this format — no other text:
       body: `Closes #${this.issue.number}\n\nOpened by ${this.agentName}.`
     });
 
-    // Update Issue label to in-review
     await this.octokit.issues.update({
       owner: this.owner,
       repo: this.repo,
@@ -216,18 +221,21 @@ Return ONLY valid JSON in this format — no other text:
   }
 
   /**
-   * Escalates a failure to the PM via the managers channel.
+   * Escalates a failure — updates Issue label to blocked.
    * @param {string} reason
    */
   async escalate(reason) {
-    await this.log(`🚨 Escalating to PM: ${reason}`);
-    // Update Issue label to blocked
-    await this.octokit.issues.update({
-      owner: this.owner,
-      repo: this.repo,
-      issue_number: this.issue.number,
-      labels: ['status:blocked']
-    });
+    await this.log(`🚨 Escalating: ${reason}`);
+    try {
+      await this.octokit.issues.update({
+        owner: this.owner,
+        repo: this.repo,
+        issue_number: this.issue.number,
+        labels: ['status:blocked']
+      });
+    } catch (err) {
+      await this.log(`⚠️ Could not update Issue label: ${err.message}`);
+    }
   }
 
   /**

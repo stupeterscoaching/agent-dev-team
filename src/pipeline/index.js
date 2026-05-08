@@ -96,12 +96,15 @@ class Pipeline {
             state: 'open'
         });
 
-        console.log(`[Pipeline] Found ${issues.length} open Issues in ${owner}/${repo}`);
-            if (issues.length > 0) {
-                issues.forEach(i => console.log(`  - #${i.number}: ${i.title}`));
+        // Filter out pull requests — GitHub returns PRs in the Issues list
+        const filteredIssues = issues.filter(i => !i.pull_request && !i.html_url.includes('/pull/'));
+
+        console.log(`[Pipeline] Found ${filteredIssues.length} open Issues in ${owner}/${repo}`);
+            if (filteredIssues.length > 0) {
+            filteredIssues.forEach(i => console.log(`  - #${i.number}: ${i.title}`));
             }
 
-            for (const issue of issues) {
+            for (const issue of filteredIssues) {
             if (spawnedIssues.has(issue.number)) continue;
             spawnedIssues.add(issue.number);
             await this.spawnWorker(issue, project.channels, projectRepo);
@@ -156,13 +159,6 @@ class Pipeline {
 
     const issueOwner = projectRepo?.owner || this.owner;
     const issueRepo = projectRepo?.repo || this.repo;
-
-    await this.octokit.issues.update({
-    owner: issueOwner,
-    repo: issueRepo,
-    issue_number: issue.number,
-    labels: ['status:in-progress']
-    });
 
     const worker = new CoderAgent(issue, projectChannels, projectRepo);
     await worker.run();

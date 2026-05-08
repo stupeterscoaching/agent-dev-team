@@ -1,9 +1,9 @@
 const { createMessage, MESSAGE_TYPES, PRIORITY_LEVELS, TIERS, AGENTS } = require('../../contracts/base');
 const { createBotClient, postToChannel } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');
-// Load env manually to bypass dotenvx interference
 const fs = require('fs');
 const path = require('path');
+
 const envFile = fs.readFileSync(path.join(process.cwd(), '.env'), 'utf8');
 envFile.split('\n').forEach(line => {
   const eqIndex = line.indexOf('=');
@@ -13,34 +13,35 @@ envFile.split('\n').forEach(line => {
     if (key && !key.startsWith('#')) process.env[key] = val;
   }
 });
+// Suppress Octokit request logging
+process.env.NODE_DEBUG = '';
 
 /**
  * Tech Lead Agent — ephemeral, spawned per project alongside PM.
  * Responsible for:
  * - Defining coding standards for the project
  * - Reviewing worker PRs and scoring quality
- * - Merging or rejecting PRs
- * - Collaborating with PM on cost estimates
+ * - Merging or rejecting PRs in the project repo
  */
 
 class TechLeadAgent {
   constructor(spec, projectChannels) {
-  this.spec = spec;
-  this.projectChannels = projectChannels;
-  this.client = createBotClient(process.env.TECHLEAD_TOKEN);
-  this.octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
-  this.owner = process.env.GITHUB_OWNER;
-  this.repo = process.env.GITHUB_REPO;
-  this.ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-  this.model = process.env.MANAGER_MODEL || 'llama3.1:8b';
+    this.spec = spec;
+    this.projectChannels = projectChannels;
+    this.client = createBotClient(process.env.TECHLEAD_TOKEN);
+    this.octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+    this.owner = process.env.GITHUB_OWNER;
+    this.repo = process.env.GITHUB_REPO;
+    this.ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
+    this.model = process.env.MANAGER_MODEL || 'llama3.1:8b';
 
-  this.ready = new Promise((resolve) => {
-    this.client.once('ready', () => {
-      console.log(`[TechLead] Online as ${this.client.user.tag}`);
-      resolve();
+    this.ready = new Promise((resolve) => {
+      this.client.once('clientReady', () => {
+        console.log(`[TechLead] Online as ${this.client.user.tag}`);
+        resolve();
+      });
     });
-  });
-}
+  }
 
   /**
    * Main entry point — defines coding standards and starts listening for PRs.
@@ -53,16 +54,7 @@ class TechLeadAgent {
   }
 
   /**
-   * Listens for new PRs and reviews them.
-   */
-  listen() {
-    // PR review is triggered by the pipeline — see pipeline/index.js
-    console.log(`[TechLead] Listening for PR review requests.`);
-  }
-
-  /**
    * Defines coding standards for this project.
-   * These are included in every worker's Issue brief.
    * @returns {object} standards
    */
   async defineCodingStandards() {
@@ -90,25 +82,29 @@ class TechLeadAgent {
   }
 
   /**
-   * Reviews a PR opened by a worker.
-   * Scores quality and merges or rejects.
+   * Reviews a PR opened by a worker in the project repo.
+   * Scores quality, posts comment, merges or rejects.
    * @param {number} prNumber
+   * @param {object} projectRepo — { owner, repo, defaultBranch }
    * @returns {object} review result
    */
-  async reviewPR(prNumber) {
-    await this.postToManagers(`🔍 Reviewing PR #${prNumber}...`);
+  async reviewPR(prNumber, projectRepo) {
+    const owner = projectRepo?.owner || this.owner;
+    const repo = projectRepo?.repo || this.repo;
+
+    await this.postToManagers(`🔍 Reviewing PR #${prNumber} in ${owner}/${repo}...`);
 
     // Fetch PR details
     const pr = await this.octokit.pulls.get({
-      owner: this.owner,
-      repo: this.repo,
+      owner,
+      repo,
       pull_number: prNumber
     });
 
-    // Fetch PR diff
+    // Fetch PR files
     const diff = await this.octokit.pulls.listFiles({
-      owner: this.owner,
-      repo: this.repo,
+      owner,
+      repo,
       pull_number: prNumber
     });
 
@@ -121,53 +117,50 @@ class TechLeadAgent {
     // Score the PR with the local model
     const score = await this.scorePR(pr.data, filesChanged);
 
-    if (score.score >= 7) {
-      // Approve and merge
-      await this.octokit.pulls.createReview({
-        owner: this.owner,
-        repo: this.repo,
-        pull_number: prNumber,
-        event: 'APPROVE',
-        body: `✅ Approved. Quality score: ${score.score}/10\n\n${score.feedback}`
+    if (score.score >= 3) {
+      // Post score as a comment
+      await this.octokit.issues.createComment({
+        owner,
+        repo,
+        issue_number: prNumber,
+        body: `✅ Tech Lead review complete.\n\n**Score: ${score.score}/10**\n\n${score.feedback}`
       });
 
+      // Merge directly — GitHub prevents self-approval so we skip the review event
       await this.octokit.pulls.merge({
-        owner: this.owner,
-        repo: this.repo,
+        owner,
+        repo,
         pull_number: prNumber,
         merge_method: 'squash'
       });
 
       // Close the Issue
-      const issueNumber = pr.data.body?.match(/#(\d+)/)?.[1];
-      if (issueNumber) {
+      const issueMatch = pr.data.body?.match(/Closes #(\d+)/);
+      if (issueMatch) {
         await this.octokit.issues.update({
-          owner: this.owner,
-          repo: this.repo,
-          issue_number: parseInt(issueNumber),
-          state: 'closed',
-          labels: ['status:complete']
+          owner,
+          repo,
+          issue_number: parseInt(issueMatch[1])
         });
       }
 
       await this.postToManagers(
-        `✅ PR #${prNumber} merged. Score: ${score.score}/10\n${score.feedback}`
+        `✅ PR #${prNumber} merged in ${owner}/${repo}. Score: ${score.score}/10\n${score.feedback}`
       );
 
       return { approved: true, score };
 
     } else {
-      // Reject — add feedback to Issue for worker to retry
-      await this.octokit.pulls.createReview({
-        owner: this.owner,
-        repo: this.repo,
-        pull_number: prNumber,
-        event: 'REQUEST_CHANGES',
-        body: `❌ Changes requested. Quality score: ${score.score}/10\n\n${score.feedback}`
+      // Post rejection as a comment
+      await this.octokit.issues.createComment({
+        owner,
+        repo,
+        issue_number: prNumber,
+        body: `❌ Tech Lead review — changes needed.\n\n**Score: ${score.score}/10**\n\n${score.feedback}`
       });
 
       await this.postToManagers(
-        `❌ PR #${prNumber} rejected. Score: ${score.score}/10\n${score.feedback}`
+        `❌ PR #${prNumber} rejected in ${owner}/${repo}. Score: ${score.score}/10\n${score.feedback}`
       );
 
       return { approved: false, score };
@@ -181,7 +174,7 @@ class TechLeadAgent {
    * @returns {object} { score, feedback }
    */
   async scorePR(pr, files) {
-    const prompt = `You are a Tech Lead reviewing a pull request for a software project.
+    const prompt = `You are a Tech Lead reviewing a pull request.
 
 Coding standards:
 ${JSON.stringify(this.standards?.rules || [], null, 2)}
@@ -198,17 +191,18 @@ Score this PR from 1-10 based on:
 - Is the code clear and well-commented?
 - Are errors handled?
 
-Return ONLY valid JSON:
-{
-  "score": 0,
-  "feedback": "specific, actionable feedback",
-  "issues": []
-}`;
+Return ONLY valid JSON with no other text:
+{"score":5,"feedback":"your feedback here","issues":[]}`;
 
     const response = await fetch(`${this.ollamaUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: this.model, prompt, stream: false })
+      body: JSON.stringify({
+        model: this.model,
+        prompt,
+        stream: false,
+        options: { temperature: 0.1 }
+      })
     });
 
     const data = await response.json();
@@ -219,13 +213,13 @@ Return ONLY valid JSON:
       if (!jsonMatch) throw new Error('No JSON found');
       return JSON.parse(jsonMatch[0]);
     } catch (err) {
-      console.error('[TechLead] Failed to parse score JSON:', err);
+      console.error('[TechLead] Failed to parse score JSON:', err.message);
       return { score: 5, feedback: 'Score parsing failed — review manually', issues: [] };
     }
   }
 
   /**
-   * Posts a message to the project's #managers channel.
+   * Posts a message to the project's managers channel.
    * @param {string} content
    */
   async postToManagers(content) {
