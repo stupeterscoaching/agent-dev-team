@@ -227,8 +227,8 @@ class PMAgent {
     for (const label of labels) {
       try {
         await this.octokit.issues.createLabel({
-          owner: this.owner,
-          repo: this.repo,
+          owner: this.projectRepo?.owner || this.owner,
+          repo: this.projectRepo?.repo || this.repo,
           name: label.name,
           color: label.color
         });
