@@ -225,18 +225,36 @@ Keep filenames simple, no paths, no leading dots or slashes.`;
    * @param {string} reason
    */
   async escalate(reason) {
-    await this.log(`🚨 Escalating: ${reason}`);
-    try {
-      await this.octokit.issues.update({
-        owner: this.owner,
-        repo: this.repo,
-        issue_number: this.issue.number,
-        labels: ['status:blocked']
-      });
-    } catch (err) {
-      await this.log(`⚠️ Could not update Issue label: ${err.message}`);
-    }
+  await this.log(`🚨 Escalating: ${reason}`);
+
+  // Post to #alerts
+  try {
+    const { postToChannel, createBotClient } = require('../../discord/client');
+    const alertClient = createBotClient(process.env.DIRECTOR_TOKEN);
+    alertClient.once('clientReady', async () => {
+      await postToChannel(
+        alertClient,
+        process.env.DISCORD_CHANNEL_ALERTS,
+        `🚨 **Worker Escalation**\n**Agent:** ${this.agentName}\n**Issue:** #${this.issue.number} — ${this.issue.title}\n**Reason:** ${reason}`
+      );
+      alertClient.destroy();
+    });
+  } catch (err) {
+    console.error(`[${this.agentName}] Failed to post alert: ${err.message}`);
   }
+
+  // Update Issue label to blocked
+  try {
+    await this.octokit.issues.update({
+      owner: this.owner,
+      repo: this.repo,
+      issue_number: this.issue.number,
+      labels: ['status:blocked']
+    });
+  } catch (err) {
+    await this.log(`⚠️ Could not update Issue label: ${err.message}`);
+  }
+}
 
   /**
    * Posts a message to the workers channel via webhook.

@@ -144,9 +144,10 @@ class TechLeadAgent {
         });
       }
 
+      console.log(`[TechLead] ✅ PR #${prNumber} merged in ${owner}/${repo}. Score: ${score.score}/10`);
       await this.postToManagers(
         `✅ PR #${prNumber} merged in ${owner}/${repo}. Score: ${score.score}/10\n${score.feedback}`
-      );
+      );;
 
       return { approved: true, score };
 
