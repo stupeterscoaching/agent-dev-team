@@ -28,6 +28,7 @@ class Pipeline {
     console.log('[Pipeline] Starting...');
     this.director = new Director();
     this.director.spawnManagers = this.spawnManagers.bind(this);
+    this.director.onProjectClose = this.closeProject.bind(this);
     console.log('[Pipeline] Director online. Waiting for project brief.');
   }
 
@@ -82,7 +83,8 @@ class Pipeline {
     console.log(`[Pipeline] Project repo: ${JSON.stringify(projectRepo)}`);
     const project = this.activeProjects[projectName];
 
-    const spawnedIssues = new Set();
+    project.spawnedIssues = new Set();
+    const spawnedIssues = project.spawnedIssues;
     
     const poll = async () => {
       console.log(`[Pipeline] Polling project repo for open Issues...`);
@@ -141,7 +143,16 @@ class Pipeline {
           if (reviewedPRs.has(pr.number)) continue;
           reviewedPRs.add(pr.number);
           console.log(`[Pipeline] PR found for review: #${pr.number}`);
-          await project.techLead.reviewPR(pr.number, projectRepo);
+          const result = await project.techLead.reviewPR(pr.number, projectRepo);
+          if (!result.approved) {
+            // Get the Issue number from the PR and remove from spawnedIssues
+            const issueMatch = pr.body?.match(/Closes #(\d+)/);
+            if (issueMatch) {
+              const issueNumber = parseInt(issueMatch[1]);
+              console.log(`[Pipeline] PR rejected — requeueing Issue #${issueNumber}`);
+              project.spawnedIssues.delete(issueNumber);
+            }
+          }
         }
       } catch (err) {
         console.error(`[Pipeline] PR watch error: ${err.message}`);
@@ -162,6 +173,47 @@ class Pipeline {
 
     const worker = new CoderAgent(issue, projectChannels, projectRepo);
     await worker.run();
+  }
+
+    async closeProject(projectName) {
+    console.log(`[Pipeline] Closing project: ${projectName}`);
+    const project = this.activeProjects[projectName];
+
+    if (!project) {
+      console.error(`[Pipeline] No active project found: ${projectName}`);
+      return;
+    }
+
+    // Write estimation history placeholder
+    const historyPath = require('path').join(process.cwd(), 'projects', 'estimation-history.json');
+    const fs = require('fs');
+
+    if (!fs.existsSync(require('path').join(process.cwd(), 'projects'))) {
+      fs.mkdirSync(require('path').join(process.cwd(), 'projects'));
+    }
+
+    let history = { projects: [] };
+    if (fs.existsSync(historyPath)) {
+      history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+    }
+
+    history.projects.push({
+      projectName,
+      closedAt: new Date().toISOString(),
+      projectRepo: project.channels
+    });
+
+    fs.writeFileSync(historyPath, JSON.stringify(history, null, 2));
+    console.log(`[Pipeline] Estimation history updated for: ${projectName}`);
+
+    // Discard PM and Tech Lead
+    if (project.pm) await project.pm.discard();
+    if (project.techLead) await project.techLead.discard();
+
+    // Remove from active projects
+    delete this.activeProjects[projectName];
+
+    console.log(`[Pipeline] Project closed: ${projectName}`);
   }
 }
 
