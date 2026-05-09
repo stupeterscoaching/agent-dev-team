@@ -1,172 +1,212 @@
 # agent-dev-team
-
-An AI agent dev team.
-
-A general purpose, tiered AI agent system for building software projects. Define a project, and the team researches, plans, builds, and reviews it — with intelligence cascading down from frontier models to local workers, and insights bubbling back up.
-
+ 
+A tiered AI agent system that builds software projects autonomously. Define a project brief in Discord, and the team plans, builds, reviews, and ships it — with human approval gates at every major decision point.
+ 
+Part of the [Bessemer Agentic](https://github.com/usebessemer) open source ecosystem.
+ 
 ---
-
-## Architecture
-
+ 
+## How it works
+ 
+```
+You type a brief in Discord
+        ↓
+Director builds a project spec → you approve
+        ↓
+PM creates a GitHub repo + Issues → cost estimate → you approve
+        ↓
+Coders spawn per Issue → branch → code → PR
+        ↓
+Tech Lead reviews PRs → scores quality → merges
+        ↓
+Tech Lead detects completion → notifies you
+        ↓
+You type close: {project-name} → project closed
+```
+ 
+Every project gets its own GitHub repo. The `agent-dev-team` repo stays clean as infrastructure only.
+ 
+---
+ 
+## Agent hierarchy
+ 
 ```
 ┌─────────────────────────────────────────┐
 │            DIRECTOR                     │
-│         (Claude API)                    │
-│                                         │
-│  Business intelligence, architecture    │
-│  decisions, quality control, strategy   │
+│         (persistent)                    │
+│  Receives briefs, builds specs,         │
+│  spins up managers, handles close       │
 └──────────────────┬──────────────────────┘
                    │
        ┌───────────┴───────────┐
        │                       │
 ┌──────▼──────┐         ┌──────▼──────┐
 │  PM AGENT   │         │  TECH LEAD  │
-│ (mid-tier)  │         │ (mid-tier)  │
+│ (ephemeral) │         │ (ephemeral) │
 │             │         │             │
-│  Backlog    │         │  Code       │
-│  Sprint     │         │  Review     │
-│  Planning   │         │  Standards  │
-└──────┬──────┘         └──────┬──────┘
-       │                       │
-       └───────────┬───────────┘
-                   │
-┌──────────────────▼──────────────────────┐
-│            WORKER AGENTS                │
-│           (local models)                │
-│                                         │
-│  Researcher │  Writer │  Coder          │
-│                                         │
-│  High volume, repetitive tasks          │
+│  Project    │         │  Coding     │
+│  repo setup │         │  standards  │
+│  Issues     │         │  PR review  │
+│  Estimates  │         │  PR merge   │
+└──────┬──────┘         └─────────────┘
+       │
+┌──────▼──────────────────────────────────┐
+│            CODER AGENTS                 │
+│           (ephemeral)                   │
+│  One per GitHub Issue                   │
+│  Branch → code → PR → discard          │
 └─────────────────────────────────────────┘
 ```
-
-### Information flow
-
-- **Top-down:** Strategy, architecture decisions, and quality standards cascade from the Director through Managers to Workers
-- **Bottom-up:** Worker insights, blockers, and outputs bubble up through Managers to the Director for review
-
+ 
 ---
-
-## How it works
-
-1. **Define a project** — add a config file to the `projects/` folder describing what you want to build
-2. **The Director** reads the project spec and creates an architecture plan
-3. **The PM Agent** breaks the plan into tasks and manages the backlog
-4. **The Tech Lead** reviews worker output and enforces code quality
-5. **Workers** execute tasks — researching, writing, and coding
-6. **Output** is collected in the `output/` folder, reviewed by managers, and reported to the Director
-
----
-
-## Model configuration
-
-Models are assigned per tier in `config.json`. Swap any tier without touching the codebase:
-
-```json
-{
-  "director": {
-    "provider": "anthropic",
-    "model": "claude-opus-4-6"
-  },
-  "managers": {
-    "provider": "anthropic",
-    "model": "claude-haiku-4-5-20251001"
-  },
-  "workers": {
-    "provider": "ollama",
-    "model": "llama3.1:8b",
-    "baseUrl": "http://127.0.0.1:11434"
-  }
-}
-```
-
----
-
-## Projects
-
-Each project lives in its own folder under `projects/`. A project defines:
-
-- **Goal** — what to build
-- **Tasks** — the work to be done
-- **Output format** — what the final artifact looks like
-
-```
-projects/
-└── twitter-content/       ← example project
-    ├── project.json       ← project spec
-    └── output/            ← generated artifacts
-```
-
-See `projects/twitter-content/` for a working example.
-
----
-
+ 
 ## Prerequisites
-
+ 
 - [Node.js](https://nodejs.org) v18+
-- [Ollama](https://ollama.com) running locally with at least one model pulled
-- An [Anthropic API key](https://console.anthropic.com) for the Director and Manager tiers
-
+- [Ollama](https://ollama.com) running locally with at least one model pulled. The system uses three model tiers — Director, Manager, and Worker. Larger models produce better results at the Director and Manager tiers. Smaller, faster models work well for workers.
+- A Discord server with 4 channels: `#director`, `#approvals`, `#alerts`, `#efficiency`
+- 5 Discord bots created in the [Discord Developer Portal](https://discord.com/developers/applications):
+  - `Director`, `Auditor`, `Efficiency-Director`, `PM-{project}`, `TechLead-{project}`
+- A GitHub personal access token with `repo` scope
 ---
 
-## Setup
+## Discord setup
 
+1. Create a Discord server with these channels:
+   - `#director` — briefs, specs, close commands
+   - `#approvals` — confirmation gates
+   - `#alerts` — worker escalations
+   - `#efficiency` — future use
+
+2. Go to [discord.com/developers/applications](https://discord.com/developers/applications) and create 5 bots:
+   - `Director`
+   - `Auditor`
+   - `Efficiency-Director`
+   - `PM-{your-project-name}`
+   - `TechLead-{your-project-name}`
+
+3. For each bot:
+   - Go to **Bot** → enable **Message Content Intent**
+   - Copy the bot token
+   - Go to **OAuth2 → URL Generator** → select `bot` scope → invite to your server
+
+4. Enable **Developer Mode** in Discord (**Settings → Advanced → Developer Mode**)
+
+5. Right-click each channel and your server to copy IDs into your `.env` file
+ 
+## Setup
+ 
 ```bash
 # Clone the repo
-git clone git@github.com:stupeterscoaching/agent-dev-team.git
+git clone git@github.com:usebessemer/agent-dev-team.git
 cd agent-dev-team
-
+ 
 # Install dependencies
 npm install
-
-# Add your Anthropic API key
+ 
+# Configure environment
 cp .env.example .env
-# Edit .env and add your ANTHROPIC_API_KEY
-
-# Run the team on a project
-node pipeline/index.js --project twitter-content
+# Edit .env and fill in your tokens — see .env.example for all required values
+ 
+# Start the system
+npm start
 ```
-
+ 
 ---
-
+ 
+## Usage
+ 
+Once running, interact with the Director in your Discord `#director` channel:
+ 
+```
+# Start a new project
+brief: build a calculator with a web interface
+ 
+# When prompted in #approvals, type:
+approve   ← confirms spec
+approve   ← confirms cost estimate
+ 
+# When the project is complete, the Tech Lead will notify you in #director
+# Review the project repo on GitHub, then type:
+close: {project-name}
+```
+ 
+---
+ 
+## Environment variables
+ 
+See `.env.example` for the full list. Key variables:
+ 
+```bash
+# Discord bot tokens
+DIRECTOR_TOKEN=
+PM_TOKEN=
+TECHLEAD_TOKEN=
+AUDITOR_TOKEN=
+EFFICIENCY_DIRECTOR_TOKEN=
+ 
+# Discord channel IDs
+DISCORD_CHANNEL_DIRECTOR=
+DISCORD_CHANNEL_APPROVALS=
+DISCORD_CHANNEL_ALERTS=
+DISCORD_CHANNEL_EFFICIENCY=
+ 
+# GitHub
+GITHUB_TOKEN=           # personal access token with repo scope
+GITHUB_OWNER=           # your GitHub username or org
+ 
+# Ollama
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+DIRECTOR_MODEL=llama3.1:8b
+MANAGER_MODEL=llama3.1:8b
+WORKER_MODEL=llama3.2:latest
+```
+ 
+---
+ 
 ## Project structure
-
+ 
 ```
 agent-dev-team/
-├── README.md
-├── config.json          ← model assignments per tier
-├── .env.example         ← environment variable template
-├── orchestrator/        ← director layer
-│   └── index.js
-├── managers/            ← PM and tech lead agents
-│   ├── pm.js
-│   └── techlead.js
-├── workers/             ← researcher, writer, coder agents
-│   ├── researcher.js
-│   ├── writer.js
-│   └── dev.js
-├── pipeline/            ← orchestration layer
-│   └── index.js
-├── projects/            ← one folder per project
-│   └── twitter-content/
-└── output/              ← generated artifacts
+├── src/
+│   ├── agents/
+│   │   ├── director/       ← persistent Director agent
+│   │   ├── managers/       ← PM and Tech Lead agents
+│   │   └── workers/        ← Coder agent
+│   ├── contracts/          ← base message contracts
+│   ├── discord/            ← Discord client utilities
+│   └── pipeline/           ← orchestration layer
+├── projects/
+│   └── estimation-history.json
+├── index.js                ← entry point
+├── .env.example
+├── ARCHITECTURE.md         ← read this before touching any code
+├── CONTRIBUTING.md
+└── LICENSE
 ```
-
+ 
 ---
-
+ 
+## Known limitations (v1.0.0)
+ 
+- **Local model quality** — `llama3.1:8b` produces functional but low quality code. Quality improves significantly when using Claude API for workers (v1.1.0).
+- **Tech Lead self-approval** — GitHub prevents a bot from formally approving its own PRs. Tech Lead uses comment + direct merge instead.
+- **Project name variability** — project names are model-generated and may vary between runs.
+- **Org-wide Discord channels** — all agents share org-wide channels. Per-project channel creation coming in v1.1.0.
+---
+ 
+## Architecture
+ 
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full system design, agent hierarchy, pipeline flow, and communication contracts.
+ 
+---
+ 
 ## Contributing
-
-This project is designed to be forked, extended, and improved. A few principles:
-
-- **Keep tiers modular** — each agent should be independently swappable
-- **Config-driven models** — never hardcode a model name in agent logic
-- **Insights bubble up** — workers should always return structured output that managers can act on
-- **Document your projects** — if you build a new project config, share it
-
-Pull requests welcome.
-
+ 
+See [CONTRIBUTING.md](./CONTRIBUTING.md).
+ 
 ---
-
+ 
 ## License
-
-MIT
+ 
+[MIT](./LICENSE) — Bessemer Agentic 2026
