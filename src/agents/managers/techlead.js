@@ -140,14 +140,19 @@ class TechLeadAgent {
         await this.octokit.issues.update({
           owner,
           repo,
-          issue_number: parseInt(issueMatch[1])
+          issue_number: parseInt(issueMatch[1]),
+          state: 'closed'
         });
+        console.log(`[TechLead] Closed Issue #${issueMatch[1]}`);
       }
 
       console.log(`[TechLead] ✅ PR #${prNumber} merged in ${owner}/${repo}. Score: ${score.score}/10`);
       await this.postToManagers(
         `✅ PR #${prNumber} merged in ${owner}/${repo}. Score: ${score.score}/10\n${score.feedback}`
-      );;
+      );
+
+      await new Promise(resolve => setTimeout(resolve, 8000));
+      await this.checkProjectComplete(owner, repo, prNumber);
 
       return { approved: true, score };
 
@@ -218,6 +223,40 @@ Return ONLY valid JSON with no other text:
       return { score: 5, feedback: 'Score parsing failed — review manually', issues: [] };
     }
   }
+
+  /**
+ * Checks if all PRs and Issues in the project repo are closed.
+ * Posts a completion summary to #director if done.
+ */
+async checkProjectComplete(owner, repo) {
+  try {
+    const { data: openPRs } = await this.octokit.pulls.list({
+      owner, repo, state: 'open'
+    });
+
+    const { data: openIssues } = await this.octokit.issues.listForRepo({
+      owner, repo, state: 'open'
+    });
+
+    const filteredIssues = openIssues.filter(i => !i.pull_request && !i.html_url.includes('/pull/'));
+
+    console.log(`[TechLead] checkProjectComplete: ${openPRs.length} open PRs, ${filteredIssues.length} open Issues`);
+
+    if (openPRs.length === 0 && filteredIssues.length === 0) {
+      console.log(`[TechLead] Project ${this.spec.projectName} appears complete.`);
+      await postToChannel(
+        this.client,
+        process.env.DISCORD_CHANNEL_DIRECTOR,
+        `✅ **Project ${this.spec.projectName} appears complete.**\n\n` +
+        `All PRs merged and Issues closed.\n` +
+        `Project repo: https://github.com/${owner}/${repo}\n\n` +
+        `Type \`close: ${this.spec.projectName}\` to confirm and close, or open new Issues to continue.`
+      );
+    }
+  } catch (err) {
+    console.error(`[TechLead] Error checking project completion: ${err.message}`);
+  }
+}
 
   /**
    * Posts a message to the project's managers channel.

@@ -63,6 +63,13 @@ class Director {
       return;
     }
 
+    // Project close confirmation
+    if (content.toLowerCase().startsWith('close:')) {
+      const projectName = content.slice(6).trim();
+      await this.closeProject(projectName);
+      return;
+    }
+
     // General conversation with Director
     const text = await this.think(content);
     const truncated = text.length > 1900 ? text.slice(0, 1900) + '...' : text;
@@ -217,6 +224,28 @@ class Director {
     const data = await response.json();
     return data.response.trim();
   }
+
+  async closeProject(projectName) {
+  const directorChannel = process.env.DISCORD_CHANNEL_DIRECTOR;
+  console.log(`[Director] Closing project: ${projectName}`);
+
+  await postToChannel(
+    this.client,
+    directorChannel,
+    `🔒 Closing project **${projectName}**...`
+  );
+
+  // Signal the pipeline to close the project
+  if (this.onProjectClose) {
+    await this.onProjectClose(projectName);
+  }
+
+  await postToChannel(
+    this.client,
+    directorChannel,
+    `✅ Project **${projectName}** closed. Estimation history updated.`
+  );
+}
 
   /**
    * Spins up PM and Tech Lead for a confirmed project.
