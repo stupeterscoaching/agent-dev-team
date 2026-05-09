@@ -80,7 +80,6 @@ class Pipeline {
 
   async watchIssues(projectName, projectRepo) {
     console.log(`[Pipeline] Watching Issues for project: ${projectName}`);
-    console.log(`[Pipeline] Project repo: ${JSON.stringify(projectRepo)}`);
     const project = this.activeProjects[projectName];
 
     project.spawnedIssues = new Set();
@@ -166,7 +165,6 @@ class Pipeline {
 
   async spawnWorker(issue, projectChannels, projectRepo) {
     console.log(`[Pipeline] Spawning worker for Issue #${issue.number}: ${issue.title}`);
-    console.log(`[Pipeline] spawnWorker projectRepo: ${JSON.stringify(projectRepo)}`);
 
     const issueOwner = projectRepo?.owner || this.owner;
     const issueRepo = projectRepo?.repo || this.repo;

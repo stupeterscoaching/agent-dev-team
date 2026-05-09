@@ -14,8 +14,6 @@ envFile.split('\n').forEach(line => {
 
 const Pipeline = require('./src/pipeline');
 
-console.log('[Boot] GITHUB_TOKEN first 8:', process.env.GITHUB_TOKEN?.slice(0, 8));
-
 console.log('[agent-dev-team] Booting...');
 
 const pipeline = new Pipeline();
