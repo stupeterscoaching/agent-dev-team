@@ -1,5 +1,6 @@
 const { createMessage, MESSAGE_TYPES, PRIORITY_LEVELS, TIERS, AGENTS } = require('../../contracts/base');
 const { createBotClient, postToChannel, waitForApproval } = require('../../discord/client');
+const Anthropic = require('@anthropic-ai/sdk');
 const fs = require('fs');
 const path = require('path');
 
@@ -13,6 +14,8 @@ envFile.split('\n').forEach(line => {
   }
 });
 
+const DIRECTOR_SYSTEM_PROMPT = `You are the Director of an AI software development team. You help executives define project specifications and coordinate work across PM, Tech Lead, and Coder agents. You are precise, technical, and always follow the exact output format requested.`;
+
 /**
  * Director Agent — the only persistent agent in the system.
  * Collaborates with the executive to build project specs.
@@ -23,7 +26,16 @@ class Director {
   constructor() {
     this.client = createBotClient(process.env.DIRECTOR_TOKEN);
     this.ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-    this.model = process.env.DIRECTOR_MODEL || 'llama3.1:8b';
+    this.useClaudeApi = !!process.env.ANTHROPIC_API_KEY;
+    this.model = process.env.DIRECTOR_MODEL || (this.useClaudeApi ? 'claude-opus-4-7' : 'llama3.1:8b');
+    this.anthropic = this.useClaudeApi
+      ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+      : null;
+
+    if (this.useClaudeApi) {
+      console.log(`[Director] Using Claude API (${this.model})`);
+    }
+
     this.ready = false;
     this.startTime = Date.now();
 
@@ -34,10 +46,6 @@ class Director {
     });
   }
 
-  /**
-   * Listens for messages in the #director channel.
-   * Executive communicates with the Director here.
-   */
   listen() {
     this.client.on('messageCreate', async (message) => {
       if (message.author.bot) return;
@@ -49,39 +57,26 @@ class Director {
     });
   }
 
-  /**
-   * Handles incoming messages from the executive.
-   * @param {Message} message - Discord message
-   */
   async handleMessage(message) {
     const content = message.content.trim();
 
-    // New project brief
     if (content.toLowerCase().startsWith('brief:')) {
       const brief = content.slice(6).trim();
       await this.processBrief(brief, message);
       return;
     }
 
-    // Project close confirmation
     if (content.toLowerCase().startsWith('close:')) {
       const projectName = content.slice(6).trim();
       await this.closeProject(projectName);
       return;
     }
 
-    // General conversation with Director
     const text = await this.think(content);
     const truncated = text.length > 1900 ? text.slice(0, 1900) + '...' : text;
     await postToChannel(this.client, process.env.DISCORD_CHANNEL_DIRECTOR, truncated);
   }
 
-  /**
-   * Processes a new project brief from the executive.
-   * Builds a spec and sends it to #approvals for confirmation.
-   * @param {string} brief
-   * @param {Message} originalMessage
-   */
   async processBrief(brief, originalMessage) {
     const directorChannel = process.env.DISCORD_CHANNEL_DIRECTOR;
     const approvalsChannel = process.env.DISCORD_CHANNEL_APPROVALS;
@@ -118,12 +113,53 @@ class Director {
     }
   }
 
-  /**
-   * Builds a project spec from a brief using the local model.
-   * @param {string} brief
-   * @returns {object} spec
-   */
   async buildSpec(brief) {
+    return this.useClaudeApi
+      ? this._buildSpecWithClaude(brief)
+      : this._buildSpecWithOllama(brief);
+  }
+
+  async _buildSpecWithClaude(brief) {
+    const response = await this.anthropic.messages.create({
+      model: this.model,
+      max_tokens: 512,
+      system: [
+        {
+          type: 'text',
+          text: DIRECTOR_SYSTEM_PROMPT,
+          cache_control: { type: 'ephemeral' }
+        }
+      ],
+      messages: [
+        {
+          role: 'user',
+          content: `Given this project brief: "${brief}"\n\nRespond with ONLY valid JSON (no markdown, no backticks):\n{"projectName":"kebab-case-name","desiredOutcome":"one sentence describing what success looks like"}`
+        }
+      ]
+    });
+
+    const text = response.content[0].text.trim();
+    let projectName = 'new-project';
+    let desiredOutcome = brief;
+
+    try {
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        projectName = (parsed.projectName || '').toLowerCase()
+          .replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 30)
+          || 'new-project';
+        desiredOutcome = parsed.desiredOutcome || brief;
+      }
+    } catch (err) {
+      console.error('[Director] Failed to parse Claude spec response:', err.message);
+    }
+
+    console.log(`[Director] Project name: ${projectName}`);
+    return this._assembleSpec(projectName, desiredOutcome, brief);
+  }
+
+  async _buildSpecWithOllama(brief) {
     const nameResponse = await fetch(`${this.ollamaUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -150,6 +186,10 @@ class Director {
     const goalData = await goalResponse.json();
     const desiredOutcome = goalData.response.trim();
 
+    return this._assembleSpec(projectName, desiredOutcome, brief);
+  }
+
+  _assembleSpec(projectName, desiredOutcome, brief) {
     return {
       spec: {
         projectName,
@@ -205,12 +245,30 @@ class Director {
     };
   }
 
-  /**
-   * General purpose thinking — sends a prompt to the local model.
-   * @param {string} prompt
-   * @returns {string}
-   */
   async think(prompt) {
+    return this.useClaudeApi
+      ? this._thinkWithClaude(prompt)
+      : this._thinkWithOllama(prompt);
+  }
+
+  async _thinkWithClaude(prompt) {
+    const response = await this.anthropic.messages.create({
+      model: this.model,
+      max_tokens: 2048,
+      system: [
+        {
+          type: 'text',
+          text: DIRECTOR_SYSTEM_PROMPT,
+          cache_control: { type: 'ephemeral' }
+        }
+      ],
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    return response.content[0].text.trim();
+  }
+
+  async _thinkWithOllama(prompt) {
     const response = await fetch(`${this.ollamaUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -226,31 +284,26 @@ class Director {
   }
 
   async closeProject(projectName) {
-  const directorChannel = process.env.DISCORD_CHANNEL_DIRECTOR;
-  console.log(`[Director] Closing project: ${projectName}`);
+    const directorChannel = process.env.DISCORD_CHANNEL_DIRECTOR;
+    console.log(`[Director] Closing project: ${projectName}`);
 
-  await postToChannel(
-    this.client,
-    directorChannel,
-    `🔒 Closing project **${projectName}**...`
-  );
+    await postToChannel(
+      this.client,
+      directorChannel,
+      `🔒 Closing project **${projectName}**...`
+    );
 
-  // Signal the pipeline to close the project
-  if (this.onProjectClose) {
-    await this.onProjectClose(projectName);
+    if (this.onProjectClose) {
+      await this.onProjectClose(projectName);
+    }
+
+    await postToChannel(
+      this.client,
+      directorChannel,
+      `✅ Project **${projectName}** closed. Estimation history updated.`
+    );
   }
 
-  await postToChannel(
-    this.client,
-    directorChannel,
-    `✅ Project **${projectName}** closed. Estimation history updated.`
-  );
-}
-
-  /**
-   * Spins up PM and Tech Lead for a confirmed project.
-   * @param {object} spec
-   */
   async spawnManagers(spec) {
     console.log(`[Director] Spawning managers for project: ${spec.spec.projectName}`);
     await postToChannel(

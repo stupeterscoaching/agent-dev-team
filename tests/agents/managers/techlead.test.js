@@ -16,10 +16,12 @@ const mockOctokit = {
     get: jest.fn(),
     listFiles: jest.fn(),
     merge: jest.fn(),
+    list: jest.fn().mockResolvedValue({ data: [] }),
   },
   issues: {
     createComment: jest.fn(),
     update: jest.fn(),
+    listForRepo: jest.fn().mockResolvedValue({ data: [] }),
   },
 };
 
@@ -106,6 +108,7 @@ describe('TechLeadAgent.reviewPR', () => {
   let agent;
 
   beforeEach(() => {
+    jest.useFakeTimers();
     agent = new TechLeadAgent(makeSpec(), { managers: 'ch-managers' });
     agent.postToManagers = jest.fn();
     agent.standards = { rules: ['Use clear names'] };
@@ -121,12 +124,23 @@ describe('TechLeadAgent.reviewPR', () => {
     mockOctokit.issues.update.mockResolvedValue({});
   });
 
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  // reviewPR has an 8s setTimeout after merge before checkProjectComplete — advance timers to skip it
+  async function runReviewPR(a, prNum, repo) {
+    const promise = a.reviewPR(prNum, repo);
+    await jest.runAllTimersAsync();
+    return promise;
+  }
+
   test('merges PR when score >= 3', async () => {
     global.fetch = jest.fn().mockResolvedValue({
       json: jest.fn().mockResolvedValue({ response: '{"score":7,"feedback":"Good","issues":[]}' }),
     });
 
-    const result = await agent.reviewPR(1, projectRepo);
+    const result = await runReviewPR(agent, 1, projectRepo);
     expect(result.approved).toBe(true);
     expect(mockOctokit.pulls.merge).toHaveBeenCalledWith(
       expect.objectContaining({ pull_number: 1, merge_method: 'squash' })
@@ -138,7 +152,7 @@ describe('TechLeadAgent.reviewPR', () => {
       json: jest.fn().mockResolvedValue({ response: '{"score":2,"feedback":"Needs work","issues":[]}' }),
     });
 
-    const result = await agent.reviewPR(1, projectRepo);
+    const result = await runReviewPR(agent, 1, projectRepo);
     expect(result.approved).toBe(false);
     expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
   });
@@ -148,7 +162,7 @@ describe('TechLeadAgent.reviewPR', () => {
       json: jest.fn().mockResolvedValue({ response: '{"score":8,"feedback":"Great","issues":[]}' }),
     });
 
-    await agent.reviewPR(1, projectRepo);
+    await runReviewPR(agent, 1, projectRepo);
     expect(mockOctokit.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('Score: 8/10') })
     );
@@ -159,7 +173,7 @@ describe('TechLeadAgent.reviewPR', () => {
       json: jest.fn().mockResolvedValue({ response: '{"score":1,"feedback":"Too bad","issues":[]}' }),
     });
 
-    await agent.reviewPR(1, projectRepo);
+    await runReviewPR(agent, 1, projectRepo);
     expect(mockOctokit.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('changes needed') })
     );
@@ -171,7 +185,7 @@ describe('TechLeadAgent.reviewPR', () => {
       json: jest.fn().mockResolvedValue({ response: '{"score":6,"feedback":"Good","issues":[]}' }),
     });
 
-    await agent.reviewPR(1, projectRepo);
+    await runReviewPR(agent, 1, projectRepo);
     expect(mockOctokit.issues.update).toHaveBeenCalledWith(
       expect.objectContaining({ issue_number: 5 })
     );
@@ -182,7 +196,7 @@ describe('TechLeadAgent.reviewPR', () => {
       json: jest.fn().mockResolvedValue({ response: '{"score":7,"feedback":"Good","issues":[]}' }),
     });
 
-    await agent.reviewPR(1, projectRepo);
+    await runReviewPR(agent, 1, projectRepo);
     expect(mockOctokit.pulls.get).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'test-owner', repo: 'test-repo' })
     );

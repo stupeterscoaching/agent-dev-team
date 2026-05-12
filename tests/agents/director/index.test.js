@@ -1,3 +1,11 @@
+let mockAnthropicCreate;
+jest.mock('@anthropic-ai/sdk', () => {
+  mockAnthropicCreate = jest.fn();
+  return jest.fn(() => ({
+    messages: { create: mockAnthropicCreate },
+  }));
+});
+
 jest.mock('../../../src/discord/client', () => ({
   createBotClient: jest.fn(() => ({
     on: jest.fn(), once: jest.fn(), off: jest.fn(),
@@ -121,5 +129,87 @@ describe('Director.buildSpec', () => {
     const names = result.spec.deliverables.map(d => d.name);
     expect(names.some(n => n.includes('frontend'))).toBe(true);
     expect(names.some(n => n.includes('backend'))).toBe(true);
+  });
+});
+
+describe('Director with Claude API', () => {
+  let director;
+
+  beforeEach(() => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    delete process.env.DIRECTOR_MODEL; // let constructor pick the Claude default
+    director = new Director();
+  });
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    process.env.DIRECTOR_MODEL = 'llama3.1:8b'; // restore setup.js value
+  });
+
+  test('useClaudeApi is true when ANTHROPIC_API_KEY is set', () => {
+    expect(director.useClaudeApi).toBe(true);
+  });
+
+  test('defaults model to claude-opus-4-7 when using Claude API', () => {
+    expect(director.model).toBe('claude-opus-4-7');
+  });
+
+  test('buildSpec returns correct shape via Claude API', async () => {
+    mockAnthropicCreate.mockResolvedValue({
+      content: [{ text: '{"projectName":"test-app","desiredOutcome":"A working test application"}' }],
+    });
+
+    const result = await director.buildSpec('Build a test app');
+    expect(result.spec.projectName).toBe('test-app');
+    expect(result.spec.brief.desiredOutcome).toBe('A working test application');
+  });
+
+  test('buildSpec caches the system prompt', async () => {
+    mockAnthropicCreate.mockResolvedValue({
+      content: [{ text: '{"projectName":"test-app","desiredOutcome":"A test app"}' }],
+    });
+
+    await director.buildSpec('Build a test app');
+
+    const call = mockAnthropicCreate.mock.calls[0][0];
+    expect(call.system[0].cache_control).toEqual({ type: 'ephemeral' });
+  });
+
+  test('buildSpec sanitizes project name from Claude response', async () => {
+    mockAnthropicCreate.mockResolvedValue({
+      content: [{ text: '{"projectName":"My App Name!!!","desiredOutcome":"A great app"}' }],
+    });
+
+    const result = await director.buildSpec('Build an app');
+    expect(result.spec.projectName).toMatch(/^[a-z0-9-]+$/);
+  });
+
+  test('buildSpec falls back to new-project when Claude returns invalid JSON', async () => {
+    mockAnthropicCreate.mockResolvedValue({
+      content: [{ text: 'Sure! Here is a great project for you.' }],
+    });
+
+    const result = await director.buildSpec('Build something');
+    expect(result.spec.projectName).toBe('new-project');
+  });
+
+  test('think uses Claude API and returns response text', async () => {
+    mockAnthropicCreate.mockResolvedValue({
+      content: [{ text: 'I can build that for you.' }],
+    });
+
+    const result = await director._thinkWithClaude('What can you build?');
+    expect(result).toBe('I can build that for you.');
+  });
+
+  test('think caches the system prompt', async () => {
+    mockAnthropicCreate.mockResolvedValue({
+      content: [{ text: 'response' }],
+    });
+
+    await director._thinkWithClaude('A question');
+
+    const call = mockAnthropicCreate.mock.calls[0][0];
+    expect(call.system[0].cache_control).toEqual({ type: 'ephemeral' });
   });
 });
