@@ -107,7 +107,10 @@ npm install
 # Configure environment
 cp .env.example .env
 # Edit .env and fill in your tokens — see .env.example for all required values
- 
+
+# Run the test suite
+npm test
+
 # Start the system
 npm start
 ```
