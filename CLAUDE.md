@@ -9,7 +9,7 @@ npm start          # Boot the system (runs index.js)
 npm run lint       # ESLint check (eslint:recommended, no-unused-vars warns, console allowed)
 ```
 
-No test suite is configured. Manual Discord interaction is the primary way to verify behavior.
+Run `npm test` to execute the full suite (90 tests, ~0.2s). All external services are mocked — no real credentials needed. Manual Discord interaction remains the primary way to verify end-to-end behaviour.
 
 ## Architecture overview
 
