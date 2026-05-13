@@ -1,3 +1,6 @@
+const mockCreateProjectChannel = jest.fn();
+const mockArchiveProjectChannel = jest.fn();
+
 jest.mock('../../src/discord/client', () => ({
   createBotClient: jest.fn(() => ({
     on: jest.fn(), once: jest.fn(), off: jest.fn(),
@@ -9,6 +12,8 @@ jest.mock('../../src/discord/client', () => ({
   postAsWorker: jest.fn().mockResolvedValue(undefined),
   postToChannel: jest.fn().mockResolvedValue(undefined),
   waitForApproval: jest.fn().mockResolvedValue(true),
+  createProjectChannel: (...args) => mockCreateProjectChannel(...args),
+  archiveProjectChannel: (...args) => mockArchiveProjectChannel(...args),
 }));
 
 const mockOctokit = {
@@ -51,6 +56,10 @@ const makeIssue = (n, isPR = false) => ({
 });
 
 describe('Pipeline.createProjectChannels', () => {
+  beforeEach(() => {
+    mockCreateProjectChannel.mockResolvedValue({ channelId: 'ch-project-123', webhookUrl: 'https://hooks/test' });
+  });
+
   test('returns object with all required channel keys', async () => {
     const pipeline = new Pipeline();
     const channels = await pipeline.createProjectChannels('test-project');
@@ -58,6 +67,35 @@ describe('Pipeline.createProjectChannels', () => {
     expect(channels).toHaveProperty('managers');
     expect(channels).toHaveProperty('workers');
     expect(channels).toHaveProperty('workersWebhook');
+  });
+
+  test('uses project channel when director client and guild ID are available', async () => {
+    process.env.DISCORD_GUILD_ID = 'guild-1';
+    const pipeline = new Pipeline();
+    pipeline.director = { client: {} };
+
+    const channels = await pipeline.createProjectChannels('my-app');
+
+    expect(mockCreateProjectChannel).toHaveBeenCalledWith({}, 'guild-1', 'my-app');
+    expect(channels.managers).toBe('ch-project-123');
+    expect(channels.workersWebhook).toBe('https://hooks/test');
+  });
+
+  test('falls back to shared channels when no director client', async () => {
+    const pipeline = new Pipeline();
+    const channels = await pipeline.createProjectChannels('my-app');
+    expect(mockCreateProjectChannel).not.toHaveBeenCalled();
+    expect(channels.managers).toBe(process.env.DISCORD_CHANNEL_DIRECTOR);
+  });
+
+  test('falls back to shared channels when createProjectChannel returns null', async () => {
+    process.env.DISCORD_GUILD_ID = 'guild-1';
+    mockCreateProjectChannel.mockResolvedValue({ channelId: null, webhookUrl: null });
+    const pipeline = new Pipeline();
+    pipeline.director = { client: {} };
+
+    const channels = await pipeline.createProjectChannels('my-app');
+    expect(channels.managers).toBe(process.env.DISCORD_CHANNEL_DIRECTOR);
   });
 });
 
@@ -249,5 +287,26 @@ describe('Pipeline.closeProject', () => {
   test('removes project from activeProjects', async () => {
     await pipeline.closeProject('test-project');
     expect(pipeline.activeProjects['test-project']).toBeUndefined();
+  });
+
+  test('archives project channel when it differs from the director channel', async () => {
+    process.env.DISCORD_GUILD_ID = 'guild-1';
+    mockArchiveProjectChannel.mockResolvedValue(undefined);
+    pipeline.director = { client: {} };
+    pipeline.activeProjects['test-project'].channels = { managers: 'ch-project-123' };
+
+    await pipeline.closeProject('test-project');
+
+    expect(mockArchiveProjectChannel).toHaveBeenCalledWith({}, 'ch-project-123', 'guild-1');
+  });
+
+  test('does not archive when project channel is the shared director channel', async () => {
+    pipeline.activeProjects['test-project'].channels = {
+      managers: process.env.DISCORD_CHANNEL_DIRECTOR,
+    };
+
+    await pipeline.closeProject('test-project');
+
+    expect(mockArchiveProjectChannel).not.toHaveBeenCalled();
   });
 });
