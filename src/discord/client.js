@@ -72,18 +72,22 @@ async function postToChannel(client, channelId, content) {
 }
 
 /**
- * Waits for a ✅ or ❌ reaction in #approvals from the executive.
- * Resolves true for ✅, false for ❌.
+ * Waits for an approve/reject message in #approvals from the executive.
+ * Resolves true for approve, false for reject or timeout.
  * @param {Client} client
  * @param {string} messageId
  * @param {string} channelId
- * @param {number} timeoutMs - default 24 hours
+ * @param {number} timeoutMs - defaults to APPROVAL_TIMEOUT_MS env var or 30 minutes
  * @returns {Promise<boolean>}
  */
-function waitForApproval(client, messageId, channelId, timeoutMs = 86400000) {
-  return new Promise((resolve, reject) => {
+function waitForApproval(client, messageId, channelId, timeoutMs = parseInt(process.env.APPROVAL_TIMEOUT_MS) || 1800000) {
+  return new Promise((resolve) => {
     const timer = setTimeout(() => {
-      reject(new Error('Approval timed out'));
+      client.off('messageCreate', handler);
+      client.channels.fetch(channelId)
+        .then(channel => channel.send('⏱️ Approval window closed — no response received. Treating as rejected.'))
+        .catch(err => console.error('[Approval] Failed to post timeout message:', err.message));
+      resolve(false);
     }, timeoutMs);
 
     const handler = (message) => {

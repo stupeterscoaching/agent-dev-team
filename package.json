@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "jest"
   },
   "repository": {
     "type": "git",
@@ -20,14 +20,16 @@
   },
   "homepage": "https://github.com/stupeterscoaching/agent-dev-team#readme",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.95.2",
     "@octokit/rest": "^22.0.1",
     "discord.js": "^14.26.4",
     "dotenv": "^17.4.2",
     "ollama": "^0.6.3",
-    "uuid": "^14.0.0"
+    "uuid": "^9.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "eslint": "^10.3.0"
+    "eslint": "^10.3.0",
+    "jest": "^30.4.2"
   }
 }

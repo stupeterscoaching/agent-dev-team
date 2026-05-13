@@ -1,0 +1,15 @@
+{
+  "projects": [
+    {
+      "projectName": "web-calculator-ui",
+      "closedAt": "2026-05-09T12:07:56.396Z",
+      "projectRepo": {
+        "director": "1500475244433899560",
+        "managers": "1500475244433899560",
+        "workers": "1500475244433899560",
+        "output": "1500475244433899560",
+        "workersWebhook": null
+      }
+    }
+  ]
+}
