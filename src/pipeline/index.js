@@ -2,6 +2,7 @@ const Director = require('../agents/director');
 const PMAgent = require('../agents/managers/pm');
 const TechLeadAgent = require('../agents/managers/techlead');
 const CoderAgent = require('../agents/workers/coder');
+const ResearcherAgent = require('../agents/workers/researcher');
 const { Octokit } = require('@octokit/rest');
 const { createProjectChannel, archiveProjectChannel } = require('../discord/client');
 const fs = require('fs');
@@ -184,10 +185,15 @@ class Pipeline {
   async spawnWorker(issue, projectChannels, projectRepo) {
     console.log(`[Pipeline] Spawning worker for Issue #${issue.number}: ${issue.title}`);
 
-    const issueOwner = projectRepo?.owner || this.owner;
-    const issueRepo = projectRepo?.repo || this.repo;
+    const labels = issue.labels?.map(l => l.name) || [];
+    let worker;
 
-    const worker = new CoderAgent(issue, projectChannels, projectRepo);
+    if (labels.includes('type:research')) {
+      worker = new ResearcherAgent(issue, projectChannels, projectRepo);
+    } else {
+      worker = new CoderAgent(issue, projectChannels, projectRepo);
+    }
+
     await worker.run();
   }
 

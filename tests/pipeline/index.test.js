@@ -43,8 +43,12 @@ jest.mock('../../src/agents/managers/techlead', () => jest.fn(() => ({
 const mockCoderRun = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../src/agents/workers/coder', () => jest.fn(() => ({ run: mockCoderRun })));
 
+const mockResearcherRun = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../src/agents/workers/researcher', () => jest.fn(() => ({ run: mockResearcherRun })));
+
 const Pipeline = require('../../src/pipeline/index');
 const CoderAgent = require('../../src/agents/workers/coder');
+const ResearcherAgent = require('../../src/agents/workers/researcher');
 
 const makeIssue = (n, isPR = false) => ({
   number: n,
@@ -100,7 +104,7 @@ describe('Pipeline.createProjectChannels', () => {
 });
 
 describe('Pipeline.spawnWorker', () => {
-  test('creates a CoderAgent and calls run()', async () => {
+  test('creates a CoderAgent for issues without type:research label', async () => {
     const pipeline = new Pipeline();
     const issue = makeIssue(1);
     const projectRepo = { owner: 'o', repo: 'r' };
@@ -109,6 +113,28 @@ describe('Pipeline.spawnWorker', () => {
 
     expect(CoderAgent).toHaveBeenCalledWith(issue, {}, projectRepo);
     expect(mockCoderRun).toHaveBeenCalled();
+  });
+
+  test('creates a ResearcherAgent for type:research issues', async () => {
+    const pipeline = new Pipeline();
+    const issue = { ...makeIssue(2), labels: [{ name: 'type:research' }] };
+    const projectRepo = { owner: 'o', repo: 'r' };
+
+    await pipeline.spawnWorker(issue, {}, projectRepo);
+
+    expect(ResearcherAgent).toHaveBeenCalledWith(issue, {}, projectRepo);
+    expect(mockResearcherRun).toHaveBeenCalled();
+    expect(CoderAgent).not.toHaveBeenCalled();
+  });
+
+  test('creates a CoderAgent when labels array is empty', async () => {
+    const pipeline = new Pipeline();
+    const issue = { ...makeIssue(3), labels: [] };
+
+    await pipeline.spawnWorker(issue, {}, { owner: 'o', repo: 'r' });
+
+    expect(CoderAgent).toHaveBeenCalled();
+    expect(ResearcherAgent).not.toHaveBeenCalled();
   });
 });
 
