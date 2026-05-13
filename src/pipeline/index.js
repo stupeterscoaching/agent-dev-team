@@ -173,7 +173,7 @@ class Pipeline {
     await worker.run();
   }
 
-    async closeProject(projectName) {
+  async closeProject(projectName) {
     console.log(`[Pipeline] Closing project: ${projectName}`);
     const project = this.activeProjects[projectName];
 
@@ -182,36 +182,64 @@ class Pipeline {
       return;
     }
 
-    // Write estimation history placeholder
-    const historyPath = require('path').join(process.cwd(), 'projects', 'estimation-history.json');
-    const fs = require('fs');
+    const estimate = project.pm?.estimate || { hours: 0, cost: 0, currency: 'CAD' };
+    const newEntry = {
+      projectName,
+      closedAt: new Date().toISOString(),
+      estimate: { hours: estimate.hours, cost: estimate.cost, currency: estimate.currency },
+      actuals: { hours: estimate.hours, cost: estimate.cost, currency: estimate.currency },
+      variance: 0,
+      notes: 'Actuals not tracked — using estimate as proxy'
+    };
 
-    if (!fs.existsSync(require('path').join(process.cwd(), 'projects'))) {
-      fs.mkdirSync(require('path').join(process.cwd(), 'projects'));
+    await this._writeToBessemerState(newEntry);
+    this._writeLocalEstimationHistory(newEntry);
+
+    if (project.pm) await project.pm.discard();
+    if (project.techLead) await project.techLead.discard();
+
+    delete this.activeProjects[projectName];
+    console.log(`[Pipeline] Project closed: ${projectName}`);
+  }
+
+  async _writeToBessemerState(newEntry) {
+    const stateOwner = process.env.BESSEMER_STATE_OWNER || 'usebessemer';
+    const stateRepo = process.env.BESSEMER_STATE_REPO || 'bessemer-state';
+
+    try {
+      const { data: fileData } = await this.octokit.repos.getContent({
+        owner: stateOwner,
+        repo: stateRepo,
+        path: 'estimation-history.json',
+      });
+      const current = JSON.parse(Buffer.from(fileData.content, 'base64').toString('utf8'));
+      current.projects.push(newEntry);
+
+      await this.octokit.repos.createOrUpdateFileContents({
+        owner: stateOwner,
+        repo: stateRepo,
+        path: 'estimation-history.json',
+        message: `chore: add estimation history for ${newEntry.projectName}`,
+        content: Buffer.from(JSON.stringify(current, null, 2)).toString('base64'),
+        sha: fileData.sha,
+      });
+      console.log(`[Pipeline] Estimation history written to bessemer-state for: ${newEntry.projectName}`);
+    } catch (err) {
+      console.warn(`[Pipeline] Failed to write to bessemer-state: ${err.message}`);
     }
+  }
+
+  _writeLocalEstimationHistory(newEntry) {
+    const historyPath = path.join(process.cwd(), 'projects', 'estimation-history.json');
+    const projectsDir = path.join(process.cwd(), 'projects');
+    if (!fs.existsSync(projectsDir)) fs.mkdirSync(projectsDir);
 
     let history = { projects: [] };
     if (fs.existsSync(historyPath)) {
       history = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
     }
-
-    history.projects.push({
-      projectName,
-      closedAt: new Date().toISOString(),
-      projectRepo: project.channels
-    });
-
+    history.projects.push(newEntry);
     fs.writeFileSync(historyPath, JSON.stringify(history, null, 2));
-    console.log(`[Pipeline] Estimation history updated for: ${projectName}`);
-
-    // Discard PM and Tech Lead
-    if (project.pm) await project.pm.discard();
-    if (project.techLead) await project.techLead.discard();
-
-    // Remove from active projects
-    delete this.activeProjects[projectName];
-
-    console.log(`[Pipeline] Project closed: ${projectName}`);
   }
 }
 

@@ -55,8 +55,9 @@ class PMAgent {
     await this.postToManagers(`📋 PM Agent online for project: **${this.spec.projectName}**`);
 
     try {
-      const history = this.readEstimationHistory();
+      const history = await this.readEstimationHistory();
       const estimate = await this.buildEstimate(history);
+      this.estimate = estimate;
       const approved = await this.requestEstimateApproval(estimate);
 
       if (!approved) {
@@ -125,15 +126,27 @@ class PMAgent {
   }
 
   /**
-   * Reads the estimation history from the repo.
-   * @returns {object} history
+   * Reads the estimation history from bessemer-state, falling back to local file.
+   * @returns {Promise<object>} history
    */
-  readEstimationHistory() {
-    const historyPath = path.join(process.cwd(), 'projects', 'estimation-history.json');
-    if (!fs.existsSync(historyPath)) {
-      return { projects: [] };
+  async readEstimationHistory() {
+    const stateOwner = process.env.BESSEMER_STATE_OWNER || 'usebessemer';
+    const stateRepo = process.env.BESSEMER_STATE_REPO || 'bessemer-state';
+
+    try {
+      const { data } = await this.octokit.repos.getContent({
+        owner: stateOwner,
+        repo: stateRepo,
+        path: 'estimation-history.json',
+      });
+      const content = Buffer.from(data.content, 'base64').toString('utf8');
+      return JSON.parse(content);
+    } catch (err) {
+      console.warn('[PM] bessemer-state unreachable, falling back to local history:', err.message);
+      const historyPath = path.join(process.cwd(), 'projects', 'estimation-history.json');
+      if (!fs.existsSync(historyPath)) return { projects: [] };
+      return JSON.parse(fs.readFileSync(historyPath, 'utf8'));
     }
-    return JSON.parse(fs.readFileSync(historyPath, 'utf8'));
   }
 
   /**

@@ -19,6 +19,7 @@ const mockOctokit = {
   repos: {
     createForAuthenticatedUser: jest.fn(),
     get: jest.fn(),
+    getContent: jest.fn(),
   },
   issues: {
     create: jest.fn(),
@@ -57,16 +58,43 @@ describe('PMAgent.readEstimationHistory', () => {
     agent = new PMAgent(makeSpec(), { managers: 'ch-managers' });
   });
 
-  test('returns empty projects array when file does not exist', () => {
-    jest.spyOn(fs, 'existsSync').mockReturnValue(false);
-    expect(agent.readEstimationHistory()).toEqual({ projects: [] });
+  test('returns history from bessemer-state when reachable', async () => {
+    const remoteHistory = { projects: [{ projectName: 'past-project', hours: 10 }] };
+    mockOctokit.repos.getContent.mockResolvedValue({
+      data: { content: Buffer.from(JSON.stringify(remoteHistory)).toString('base64') },
+    });
+    const result = await agent.readEstimationHistory();
+    expect(result).toEqual(remoteHistory);
   });
 
-  test('parses and returns JSON when file exists', () => {
-    const mockHistory = { projects: [{ projectType: 'web-app', hours: 10 }] };
+  test('falls back to local file when bessemer-state is unreachable', async () => {
+    mockOctokit.repos.getContent.mockRejectedValue(new Error('network error'));
+    const localHistory = { projects: [{ projectType: 'web-app', hours: 8 }] };
     jest.spyOn(fs, 'existsSync').mockReturnValue(true);
-    jest.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify(mockHistory));
-    expect(agent.readEstimationHistory()).toEqual(mockHistory);
+    jest.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify(localHistory));
+    const result = await agent.readEstimationHistory();
+    expect(result).toEqual(localHistory);
+  });
+
+  test('returns empty projects array when bessemer-state unreachable and no local file', async () => {
+    mockOctokit.repos.getContent.mockRejectedValue(new Error('network error'));
+    jest.spyOn(fs, 'existsSync').mockReturnValue(false);
+    const result = await agent.readEstimationHistory();
+    expect(result).toEqual({ projects: [] });
+  });
+
+  test('reads from BESSEMER_STATE_OWNER and BESSEMER_STATE_REPO env vars', async () => {
+    process.env.BESSEMER_STATE_OWNER = 'custom-owner';
+    process.env.BESSEMER_STATE_REPO = 'custom-repo';
+    mockOctokit.repos.getContent.mockResolvedValue({
+      data: { content: Buffer.from('{"projects":[]}').toString('base64') },
+    });
+    await agent.readEstimationHistory();
+    expect(mockOctokit.repos.getContent).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'custom-owner', repo: 'custom-repo' })
+    );
+    delete process.env.BESSEMER_STATE_OWNER;
+    delete process.env.BESSEMER_STATE_REPO;
   });
 });
 

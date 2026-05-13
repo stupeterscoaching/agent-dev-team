@@ -14,6 +14,10 @@ jest.mock('../../src/discord/client', () => ({
 const mockOctokit = {
   issues: { listForRepo: jest.fn() },
   pulls: { list: jest.fn() },
+  repos: {
+    getContent: jest.fn(),
+    createOrUpdateFileContents: jest.fn(),
+  },
 };
 
 jest.mock('@octokit/rest', () => ({ Octokit: jest.fn(() => mockOctokit) }));
@@ -21,10 +25,13 @@ jest.mock('@octokit/rest', () => ({ Octokit: jest.fn(() => mockOctokit) }));
 jest.mock('../../src/agents/director/index', () => jest.fn(() => ({})));
 jest.mock('../../src/agents/managers/pm', () => jest.fn(() => ({
   run: jest.fn().mockResolvedValue(undefined),
+  discard: jest.fn().mockResolvedValue(undefined),
   projectRepo: { owner: 'o', repo: 'r' },
+  estimate: { hours: 10, cost: 200, currency: 'CAD' },
 })));
 jest.mock('../../src/agents/managers/techlead', () => jest.fn(() => ({
   run: jest.fn().mockResolvedValue(undefined),
+  discard: jest.fn().mockResolvedValue(undefined),
   reviewPR: jest.fn().mockResolvedValue({ approved: true }),
 })));
 
@@ -176,5 +183,71 @@ describe('Pipeline.watchPRs', () => {
     await flushAsync();
 
     expect(mockTechLead.reviewPR).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Pipeline.closeProject', () => {
+  let pipeline;
+  const existingHistory = { projects: [{ projectName: 'old-project' }] };
+  const existingContent = Buffer.from(JSON.stringify(existingHistory)).toString('base64');
+
+  beforeEach(() => {
+    pipeline = new Pipeline();
+    pipeline.activeProjects['test-project'] = {
+      pm: { estimate: { hours: 10, cost: 200, currency: 'CAD' }, discard: jest.fn().mockResolvedValue(undefined) },
+      techLead: { discard: jest.fn().mockResolvedValue(undefined) },
+      channels: {},
+    };
+    mockOctokit.repos.getContent.mockResolvedValue({ data: { content: existingContent, sha: 'abc123' } });
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+  });
+
+  test('appends new entry with correct schema to bessemer-state', async () => {
+    await pipeline.closeProject('test-project');
+    const call = mockOctokit.repos.createOrUpdateFileContents.mock.calls[0][0];
+    const written = JSON.parse(Buffer.from(call.content, 'base64').toString('utf8'));
+    const newEntry = written.projects[1];
+    expect(newEntry).toMatchObject({
+      projectName: 'test-project',
+      closedAt: expect.any(String),
+      estimate: { hours: 10, cost: 200, currency: 'CAD' },
+      actuals: { hours: 10, cost: 200, currency: 'CAD' },
+      variance: 0,
+      notes: expect.any(String),
+    });
+  });
+
+  test('preserves existing bessemer-state entries (append-only)', async () => {
+    await pipeline.closeProject('test-project');
+    const call = mockOctokit.repos.createOrUpdateFileContents.mock.calls[0][0];
+    const written = JSON.parse(Buffer.from(call.content, 'base64').toString('utf8'));
+    expect(written.projects).toHaveLength(2);
+    expect(written.projects[0].projectName).toBe('old-project');
+  });
+
+  test('uses correct SHA when writing to bessemer-state', async () => {
+    await pipeline.closeProject('test-project');
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledWith(
+      expect.objectContaining({ sha: 'abc123' })
+    );
+  });
+
+  test('still closes project when bessemer-state write fails', async () => {
+    mockOctokit.repos.getContent.mockRejectedValue(new Error('network error'));
+    await expect(pipeline.closeProject('test-project')).resolves.not.toThrow();
+    expect(pipeline.activeProjects['test-project']).toBeUndefined();
+  });
+
+  test('discards PM and Tech Lead agents on close', async () => {
+    const pm = pipeline.activeProjects['test-project'].pm;
+    const techLead = pipeline.activeProjects['test-project'].techLead;
+    await pipeline.closeProject('test-project');
+    expect(pm.discard).toHaveBeenCalled();
+    expect(techLead.discard).toHaveBeenCalled();
+  });
+
+  test('removes project from activeProjects', async () => {
+    await pipeline.closeProject('test-project');
+    expect(pipeline.activeProjects['test-project']).toBeUndefined();
   });
 });
