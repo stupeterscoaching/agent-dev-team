@@ -29,7 +29,8 @@ class TechLeadAgent {
     this.spec = spec;
     this.projectChannels = projectChannels;
     this.client = createBotClient(process.env.TECHLEAD_TOKEN);
-    this.octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+    this.hasSeparateGitHubAccount = !!process.env.TECHLEAD_GITHUB_TOKEN;
+    this.octokit = new Octokit({ auth: process.env.TECHLEAD_GITHUB_TOKEN || process.env.GITHUB_TOKEN });
     this.owner = process.env.GITHUB_OWNER;
     this.repo = process.env.GITHUB_REPO;
     this.ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
@@ -118,15 +119,23 @@ class TechLeadAgent {
     const score = await this.scorePR(pr.data, filesChanged);
 
     if (score.score >= 3) {
-      // Post score as a comment
-      await this.octokit.issues.createComment({
-        owner,
-        repo,
-        issue_number: prNumber,
-        body: `✅ Tech Lead review complete.\n\n**Score: ${score.score}/10**\n\n${score.feedback}`
-      });
+      if (this.hasSeparateGitHubAccount) {
+        await this.octokit.pulls.createReview({
+          owner,
+          repo,
+          pull_number: prNumber,
+          event: 'APPROVE',
+          body: `✅ Tech Lead review complete.\n\n**Score: ${score.score}/10**\n\n${score.feedback}`
+        });
+      } else {
+        await this.octokit.issues.createComment({
+          owner,
+          repo,
+          issue_number: prNumber,
+          body: `✅ Tech Lead review complete.\n\n**Score: ${score.score}/10**\n\n${score.feedback}`
+        });
+      }
 
-      // Merge directly — GitHub prevents self-approval so we skip the review event
       await this.octokit.pulls.merge({
         owner,
         repo,
@@ -157,13 +166,22 @@ class TechLeadAgent {
       return { approved: true, score };
 
     } else {
-      // Post rejection as a comment
-      await this.octokit.issues.createComment({
-        owner,
-        repo,
-        issue_number: prNumber,
-        body: `❌ Tech Lead review — changes needed.\n\n**Score: ${score.score}/10**\n\n${score.feedback}`
-      });
+      if (this.hasSeparateGitHubAccount) {
+        await this.octokit.pulls.createReview({
+          owner,
+          repo,
+          pull_number: prNumber,
+          event: 'REQUEST_CHANGES',
+          body: `❌ Tech Lead review — changes needed.\n\n**Score: ${score.score}/10**\n\n${score.feedback}`
+        });
+      } else {
+        await this.octokit.issues.createComment({
+          owner,
+          repo,
+          issue_number: prNumber,
+          body: `❌ Tech Lead review — changes needed.\n\n**Score: ${score.score}/10**\n\n${score.feedback}`
+        });
+      }
 
       await this.postToManagers(
         `❌ PR #${prNumber} rejected in ${owner}/${repo}. Score: ${score.score}/10\n${score.feedback}`
