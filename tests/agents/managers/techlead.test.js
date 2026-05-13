@@ -17,6 +17,7 @@ const mockOctokit = {
     listFiles: jest.fn(),
     merge: jest.fn(),
     list: jest.fn().mockResolvedValue({ data: [] }),
+    createReview: jest.fn(),
   },
   issues: {
     createComment: jest.fn(),
@@ -199,6 +200,90 @@ describe('TechLeadAgent.reviewPR', () => {
     await runReviewPR(agent, 1, projectRepo);
     expect(mockOctokit.pulls.get).toHaveBeenCalledWith(
       expect.objectContaining({ owner: 'test-owner', repo: 'test-repo' })
+    );
+  });
+});
+
+describe('TechLeadAgent.reviewPR — separate GitHub account', () => {
+  let agent;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    process.env.TECHLEAD_GITHUB_TOKEN = 'separate-token';
+    agent = new TechLeadAgent(makeSpec(), { managers: 'ch-managers' });
+    agent.postToManagers = jest.fn();
+    agent.standards = { rules: ['Use clear names'] };
+
+    mockOctokit.pulls.get.mockResolvedValue({
+      data: { title: 'Add feature', body: 'Closes #5', number: 1 },
+    });
+    mockOctokit.pulls.listFiles.mockResolvedValue({
+      data: [{ filename: 'app.js', changes: 10, patch: '+code' }],
+    });
+    mockOctokit.pulls.createReview.mockResolvedValue({});
+    mockOctokit.pulls.merge.mockResolvedValue({});
+    mockOctokit.issues.update.mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    delete process.env.TECHLEAD_GITHUB_TOKEN;
+    jest.clearAllMocks();
+  });
+
+  async function runReviewPR(a, prNum, repo) {
+    const promise = a.reviewPR(prNum, repo);
+    await jest.runAllTimersAsync();
+    return promise;
+  }
+
+  test('hasSeparateGitHubAccount is true when TECHLEAD_GITHUB_TOKEN is set', () => {
+    expect(agent.hasSeparateGitHubAccount).toBe(true);
+  });
+
+  test('uses pulls.createReview APPROVE instead of comment on approval', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ response: '{"score":7,"feedback":"Good","issues":[]}' }),
+    });
+
+    await runReviewPR(agent, 1, projectRepo);
+    expect(mockOctokit.pulls.createReview).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'APPROVE', pull_number: 1 })
+    );
+    expect(mockOctokit.issues.createComment).not.toHaveBeenCalled();
+  });
+
+  test('uses pulls.createReview REQUEST_CHANGES instead of comment on rejection', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ response: '{"score":1,"feedback":"Needs work","issues":[]}' }),
+    });
+
+    await runReviewPR(agent, 1, projectRepo);
+    expect(mockOctokit.pulls.createReview).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'REQUEST_CHANGES', pull_number: 1 })
+    );
+    expect(mockOctokit.issues.createComment).not.toHaveBeenCalled();
+  });
+
+  test('approval review body contains score', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ response: '{"score":8,"feedback":"Great","issues":[]}' }),
+    });
+
+    await runReviewPR(agent, 1, projectRepo);
+    expect(mockOctokit.pulls.createReview).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('Score: 8/10') })
+    );
+  });
+
+  test('rejection review body contains changes needed', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ response: '{"score":2,"feedback":"Too rough","issues":[]}' }),
+    });
+
+    await runReviewPR(agent, 1, projectRepo);
+    expect(mockOctokit.pulls.createReview).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('changes needed') })
     );
   });
 });
