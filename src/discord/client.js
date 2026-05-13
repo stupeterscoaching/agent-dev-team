@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, WebhookClient, Partials } = require('discord.js');
+const { Client, GatewayIntentBits, WebhookClient, Partials, ChannelType } = require('discord.js');
 // Load env manually to bypass dotenvx interference
 const fs = require('fs');
 const path = require('path');
@@ -113,10 +113,59 @@ function waitForApproval(client, messageId, channelId, timeoutMs = parseInt(proc
   });
 }
 
+/**
+ * Creates a per-project Discord channel and a webhook inside it for workers.
+ * @param {Client} client
+ * @param {string} guildId
+ * @param {string} projectName - already sanitized kebab-case name
+ * @returns {Promise<{channelId: string|null, webhookUrl: string|null}>}
+ */
+async function createProjectChannel(client, guildId, projectName) {
+  try {
+    const guild = await client.guilds.fetch(guildId);
+    const channelName = `proj-${projectName}`.slice(0, 100);
+
+    const channel = await guild.channels.create({
+      name: channelName,
+      type: ChannelType.GuildText,
+      topic: `Agent activity for project: ${projectName}`,
+    });
+
+    const webhook = await channel.createWebhook({ name: 'Workers' });
+
+    console.log(`[Discord] Created project channel: #${channelName} (${channel.id})`);
+    return { channelId: channel.id, webhookUrl: webhook.url };
+  } catch (err) {
+    console.error(`[Discord] Failed to create project channel for ${projectName}: ${err.message}`);
+    return { channelId: null, webhookUrl: null };
+  }
+}
+
+/**
+ * Archives a project channel by making it read-only and renaming it.
+ * @param {Client} client
+ * @param {string} channelId
+ * @param {string} guildId
+ */
+async function archiveProjectChannel(client, channelId, guildId) {
+  try {
+    const channel = await client.channels.fetch(channelId);
+    await channel.permissionOverwrites.edit(guildId, { SendMessages: false });
+    if (!channel.name.startsWith('archived-')) {
+      await channel.setName(`archived-${channel.name}`);
+    }
+    console.log(`[Discord] Archived project channel: ${channelId}`);
+  } catch (err) {
+    console.error(`[Discord] Failed to archive project channel ${channelId}: ${err.message}`);
+  }
+}
+
 module.exports = {
   createBotClient,
   createWebhookClient,
   postAsWorker,
   postToChannel,
-  waitForApproval
+  waitForApproval,
+  createProjectChannel,
+  archiveProjectChannel,
 };

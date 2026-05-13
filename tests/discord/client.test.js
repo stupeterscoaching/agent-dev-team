@@ -11,9 +11,10 @@ jest.mock('discord.js', () => ({
   GatewayIntentBits: { Guilds: 1, GuildMessages: 2, MessageContent: 4, DirectMessages: 8, GuildMessageReactions: 16 },
   WebhookClient: jest.fn(() => ({ send: jest.fn() })),
   Partials: { Message: 'M', Channel: 'C', Reaction: 'R' },
+  ChannelType: { GuildText: 0 },
 }));
 
-const { waitForApproval } = require('../../src/discord/client');
+const { waitForApproval, createProjectChannel, archiveProjectChannel } = require('../../src/discord/client');
 
 describe('waitForApproval', () => {
   let mockClient;
@@ -124,5 +125,99 @@ describe('waitForApproval', () => {
     handler({ author: { bot: false, tag: 'User#1234' }, channelId: 'channel-1', content: '  APPROVE  ' });
 
     await expect(promise).resolves.toBe(true);
+  });
+});
+
+describe('createProjectChannel', () => {
+  let mockClient;
+  let mockChannel;
+  let mockWebhook;
+
+  beforeEach(() => {
+    mockWebhook = { url: 'https://discord.com/api/webhooks/test/token' };
+    mockChannel = {
+      id: 'channel-abc123',
+      createWebhook: jest.fn().mockResolvedValue(mockWebhook),
+    };
+    mockClient = {
+      guilds: {
+        fetch: jest.fn().mockResolvedValue({
+          channels: {
+            create: jest.fn().mockResolvedValue(mockChannel),
+          },
+        }),
+      },
+    };
+  });
+
+  test('creates a channel with proj- prefix', async () => {
+    await createProjectChannel(mockClient, 'guild-1', 'my-app');
+    const guild = await mockClient.guilds.fetch.mock.results[0].value;
+    expect(guild.channels.create).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'proj-my-app' })
+    );
+  });
+
+  test('creates a webhook in the new channel', async () => {
+    await createProjectChannel(mockClient, 'guild-1', 'my-app');
+    expect(mockChannel.createWebhook).toHaveBeenCalledWith({ name: 'Workers' });
+  });
+
+  test('returns channelId and webhookUrl on success', async () => {
+    const result = await createProjectChannel(mockClient, 'guild-1', 'my-app');
+    expect(result).toEqual({ channelId: 'channel-abc123', webhookUrl: mockWebhook.url });
+  });
+
+  test('returns null values when channel creation fails', async () => {
+    mockClient.guilds.fetch.mockRejectedValue(new Error('Missing permissions'));
+    const result = await createProjectChannel(mockClient, 'guild-1', 'my-app');
+    expect(result).toEqual({ channelId: null, webhookUrl: null });
+  });
+
+  test('truncates channel name to 100 characters', async () => {
+    await createProjectChannel(mockClient, 'guild-1', 'a'.repeat(100));
+    const guild = await mockClient.guilds.fetch.mock.results[0].value;
+    const name = guild.channels.create.mock.calls[0][0].name;
+    expect(name.length).toBeLessThanOrEqual(100);
+  });
+});
+
+describe('archiveProjectChannel', () => {
+  let mockClient;
+  let mockChannel;
+
+  beforeEach(() => {
+    mockChannel = {
+      name: 'proj-my-app',
+      permissionOverwrites: { edit: jest.fn().mockResolvedValue(undefined) },
+      setName: jest.fn().mockResolvedValue(undefined),
+    };
+    mockClient = {
+      channels: { fetch: jest.fn().mockResolvedValue(mockChannel) },
+    };
+  });
+
+  test('denies SendMessages for @everyone', async () => {
+    await archiveProjectChannel(mockClient, 'channel-1', 'guild-1');
+    expect(mockChannel.permissionOverwrites.edit).toHaveBeenCalledWith(
+      'guild-1',
+      { SendMessages: false }
+    );
+  });
+
+  test('renames channel with archived- prefix', async () => {
+    await archiveProjectChannel(mockClient, 'channel-1', 'guild-1');
+    expect(mockChannel.setName).toHaveBeenCalledWith('archived-proj-my-app');
+  });
+
+  test('does not double-prefix already archived channels', async () => {
+    mockChannel.name = 'archived-proj-my-app';
+    await archiveProjectChannel(mockClient, 'channel-1', 'guild-1');
+    expect(mockChannel.setName).not.toHaveBeenCalled();
+  });
+
+  test('handles errors without throwing', async () => {
+    mockClient.channels.fetch.mockRejectedValue(new Error('Unknown channel'));
+    await expect(archiveProjectChannel(mockClient, 'bad-id', 'guild-1')).resolves.not.toThrow();
   });
 });

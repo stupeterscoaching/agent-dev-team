@@ -3,6 +3,7 @@ const PMAgent = require('../agents/managers/pm');
 const TechLeadAgent = require('../agents/managers/techlead');
 const CoderAgent = require('../agents/workers/coder');
 const { Octokit } = require('@octokit/rest');
+const { createProjectChannel, archiveProjectChannel } = require('../discord/client');
 const fs = require('fs');
 const path = require('path');
 
@@ -68,13 +69,30 @@ class Pipeline {
   }
 
   async createProjectChannels(projectName) {
-    console.log(`[Pipeline] Using org-wide channels for project: ${projectName}`);
+    const client = this.director?.client;
+    const guildId = process.env.DISCORD_GUILD_ID;
+
+    if (client && guildId) {
+      const { channelId, webhookUrl } = await createProjectChannel(client, guildId, projectName);
+      if (channelId) {
+        console.log(`[Pipeline] Project channel created for: ${projectName}`);
+        return {
+          director: process.env.DISCORD_CHANNEL_DIRECTOR,
+          managers: channelId,
+          workers: channelId,
+          output: channelId,
+          workersWebhook: webhookUrl,
+        };
+      }
+    }
+
+    console.log(`[Pipeline] Falling back to org-wide channels for: ${projectName}`);
     return {
       director: process.env.DISCORD_CHANNEL_DIRECTOR,
       managers: process.env.DISCORD_CHANNEL_DIRECTOR,
       workers: process.env.DISCORD_CHANNEL_DIRECTOR,
       output: process.env.DISCORD_CHANNEL_DIRECTOR,
-      workersWebhook: process.env.DISCORD_WEBHOOK_WORKERS || null
+      workersWebhook: process.env.DISCORD_WEBHOOK_WORKERS || null,
     };
   }
 
@@ -197,6 +215,12 @@ class Pipeline {
 
     if (project.pm) await project.pm.discard();
     if (project.techLead) await project.techLead.discard();
+
+    const projectChannelId = project.channels?.managers;
+    const directorChannelId = process.env.DISCORD_CHANNEL_DIRECTOR;
+    if (projectChannelId && projectChannelId !== directorChannelId && this.director?.client) {
+      await archiveProjectChannel(this.director.client, projectChannelId, process.env.DISCORD_GUILD_ID);
+    }
 
     delete this.activeProjects[projectName];
     console.log(`[Pipeline] Project closed: ${projectName}`);
