@@ -38,19 +38,37 @@ describe('Director.handleMessage', () => {
   test('calls processBrief when message starts with "brief:"', async () => {
     const message = { content: 'brief: Build a calculator', channelId: 'test-channel-director' };
     await director.handleMessage(message);
-    expect(director.processBrief).toHaveBeenCalledWith('Build a calculator', message);
+    expect(director.processBrief).toHaveBeenCalledWith('Build a calculator', message, null);
   });
 
   test('trims whitespace from brief content', async () => {
     const message = { content: 'brief:   Build a todo app   ', channelId: 'test-channel-director' };
     await director.handleMessage(message);
-    expect(director.processBrief).toHaveBeenCalledWith('Build a todo app', message);
+    expect(director.processBrief).toHaveBeenCalledWith('Build a todo app', message, null);
   });
 
   test('is case-insensitive for the brief: prefix', async () => {
     const message = { content: 'BRIEF: Build something', channelId: 'test-channel-director' };
     await director.handleMessage(message);
     expect(director.processBrief).toHaveBeenCalled();
+  });
+
+  test('extracts project name from [name] prefix in brief', async () => {
+    const message = { content: 'brief: [my-calculator] Build a web calculator', channelId: 'test-channel-director' };
+    await director.handleMessage(message);
+    expect(director.processBrief).toHaveBeenCalledWith('Build a web calculator', message, 'my-calculator');
+  });
+
+  test('sanitizes project name extracted from brief', async () => {
+    const message = { content: 'brief: [My Calculator!!!] Build it', channelId: 'test-channel-director' };
+    await director.handleMessage(message);
+    expect(director.processBrief).toHaveBeenCalledWith('Build it', message, 'my-calculator');
+  });
+
+  test('passes null projectName when no [name] prefix given', async () => {
+    const message = { content: 'brief: Build a calculator', channelId: 'test-channel-director' };
+    await director.handleMessage(message);
+    expect(director.processBrief).toHaveBeenCalledWith(expect.any(String), message, null);
   });
 
   test('calls think for non-brief messages', async () => {
@@ -129,6 +147,15 @@ describe('Director.buildSpec', () => {
     const names = result.spec.deliverables.map(d => d.name);
     expect(names.some(n => n.includes('frontend'))).toBe(true);
     expect(names.some(n => n.includes('backend'))).toBe(true);
+  });
+
+  test('uses provided projectName and skips name inference call', async () => {
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce({ json: jest.fn().mockResolvedValue({ response: 'A working calculator' }) });
+
+    const result = await director.buildSpec('Build a web calculator', 'exec-chosen-name');
+    expect(result.spec.projectName).toBe('exec-chosen-name');
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -211,5 +238,14 @@ describe('Director with Claude API', () => {
 
     const call = mockAnthropicCreate.mock.calls[0][0];
     expect(call.system[0].cache_control).toEqual({ type: 'ephemeral' });
+  });
+
+  test('buildSpec uses provided projectName over Claude response name', async () => {
+    mockAnthropicCreate.mockResolvedValue({
+      content: [{ text: '{"projectName":"claude-chosen-name","desiredOutcome":"A great app"}' }],
+    });
+
+    const result = await director.buildSpec('Build an app', 'exec-chosen-name');
+    expect(result.spec.projectName).toBe('exec-chosen-name');
   });
 });

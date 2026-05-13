@@ -57,12 +57,23 @@ class Director {
     });
   }
 
+  _sanitizeName(name) {
+    return name.toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 30) || null;
+  }
+
   async handleMessage(message) {
     const content = message.content.trim();
 
     if (content.toLowerCase().startsWith('brief:')) {
-      const brief = content.slice(6).trim();
-      await this.processBrief(brief, message);
+      const raw = content.slice(6).trim();
+      const nameMatch = raw.match(/^\[([^\]]+)\]\s*(.*)/s);
+      const projectName = nameMatch ? this._sanitizeName(nameMatch[1]) : null;
+      const brief = nameMatch ? nameMatch[2].trim() : raw;
+      await this.processBrief(brief, message, projectName);
       return;
     }
 
@@ -77,13 +88,13 @@ class Director {
     await postToChannel(this.client, process.env.DISCORD_CHANNEL_DIRECTOR, truncated);
   }
 
-  async processBrief(brief, originalMessage) {
+  async processBrief(brief, originalMessage, projectName = null) {
     const directorChannel = process.env.DISCORD_CHANNEL_DIRECTOR;
     const approvalsChannel = process.env.DISCORD_CHANNEL_APPROVALS;
 
     await postToChannel(this.client, directorChannel, '📋 Brief received. Building project spec...');
 
-    const spec = await this.buildSpec(brief);
+    const spec = await this.buildSpec(brief, projectName);
 
     const summaryMessage =
       `**New Project Spec — Awaiting Approval**\n\n` +
@@ -113,13 +124,13 @@ class Director {
     }
   }
 
-  async buildSpec(brief) {
+  async buildSpec(brief, projectName = null) {
     return this.useClaudeApi
-      ? this._buildSpecWithClaude(brief)
-      : this._buildSpecWithOllama(brief);
+      ? this._buildSpecWithClaude(brief, projectName)
+      : this._buildSpecWithOllama(brief, projectName);
   }
 
-  async _buildSpecWithClaude(brief) {
+  async _buildSpecWithClaude(brief, projectName = null) {
     const response = await this.anthropic.messages.create({
       model: this.model,
       max_tokens: 512,
@@ -139,40 +150,47 @@ class Director {
     });
 
     const text = response.content[0].text.trim();
-    let projectName = 'new-project';
+    let resolvedName = projectName || 'new-project';
     let desiredOutcome = brief;
 
     try {
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
-        projectName = (parsed.projectName || '').toLowerCase()
-          .replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 30)
-          || 'new-project';
+        if (!projectName) {
+          resolvedName = (parsed.projectName || '').toLowerCase()
+            .replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 30)
+            || 'new-project';
+        }
         desiredOutcome = parsed.desiredOutcome || brief;
       }
     } catch (err) {
       console.error('[Director] Failed to parse Claude spec response:', err.message);
     }
 
-    console.log(`[Director] Project name: ${projectName}`);
-    return this._assembleSpec(projectName, desiredOutcome, brief);
+    console.log(`[Director] Project name: ${resolvedName}`);
+    return this._assembleSpec(resolvedName, desiredOutcome, brief);
   }
 
-  async _buildSpecWithOllama(brief) {
-    const nameResponse = await fetch(`${this.ollamaUrl}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.model,
-        prompt: `Given this project brief: "${brief}"\n\nRespond with ONLY a short kebab-case project name (example: web-calculator). No other text.`,
-        stream: false
-      })
-    });
-    const nameData = await nameResponse.json();
-    const rawName = nameData.response.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 30);
-    const projectName = rawName || 'new-project';
-    console.log(`[Director] Project name: ${projectName}`);
+  async _buildSpecWithOllama(brief, projectName = null) {
+    let resolvedName = projectName;
+
+    if (!resolvedName) {
+      const nameResponse = await fetch(`${this.ollamaUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: this.model,
+          prompt: `Given this project brief: "${brief}"\n\nRespond with ONLY a short kebab-case project name (example: web-calculator). No other text.`,
+          stream: false
+        })
+      });
+      const nameData = await nameResponse.json();
+      const rawName = nameData.response.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 30);
+      resolvedName = rawName || 'new-project';
+    }
+
+    console.log(`[Director] Project name: ${resolvedName}`);
 
     const goalResponse = await fetch(`${this.ollamaUrl}/api/generate`, {
       method: 'POST',
@@ -186,7 +204,7 @@ class Director {
     const goalData = await goalResponse.json();
     const desiredOutcome = goalData.response.trim();
 
-    return this._assembleSpec(projectName, desiredOutcome, brief);
+    return this._assembleSpec(resolvedName, desiredOutcome, brief);
   }
 
   _assembleSpec(projectName, desiredOutcome, brief) {
