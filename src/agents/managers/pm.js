@@ -297,7 +297,8 @@ ${JSON.stringify(architecture, null, 2)}`;
           `project:${projectName}`,
           'tier:worker',
           'status:backlog',
-          'priority:medium'
+          'priority:medium',
+          `type:${deliverable.type}`,
         ]
       });
 
