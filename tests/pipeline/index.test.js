@@ -46,9 +46,13 @@ jest.mock('../../src/agents/workers/coder', () => jest.fn(() => ({ run: mockCode
 const mockResearcherRun = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../src/agents/workers/researcher', () => jest.fn(() => ({ run: mockResearcherRun })));
 
+const mockWriterRun = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../src/agents/workers/writer', () => jest.fn(() => ({ run: mockWriterRun })));
+
 const Pipeline = require('../../src/pipeline/index');
 const CoderAgent = require('../../src/agents/workers/coder');
 const ResearcherAgent = require('../../src/agents/workers/researcher');
+const WriterAgent = require('../../src/agents/workers/writer');
 
 const makeIssue = (n, isPR = false) => ({
   number: n,
@@ -134,6 +138,18 @@ describe('Pipeline.spawnWorker', () => {
     await pipeline.spawnWorker(issue, {}, { owner: 'o', repo: 'r' });
 
     expect(CoderAgent).toHaveBeenCalled();
+    expect(ResearcherAgent).not.toHaveBeenCalled();
+  });
+
+  test('creates a WriterAgent for type:docs issues', async () => {
+    const pipeline = new Pipeline();
+    const issue = { ...makeIssue(4), labels: [{ name: 'type:docs' }] };
+
+    await pipeline.spawnWorker(issue, {}, { owner: 'o', repo: 'r' });
+
+    expect(WriterAgent).toHaveBeenCalledWith(issue, {}, { owner: 'o', repo: 'r' });
+    expect(mockWriterRun).toHaveBeenCalled();
+    expect(CoderAgent).not.toHaveBeenCalled();
     expect(ResearcherAgent).not.toHaveBeenCalled();
   });
 });
