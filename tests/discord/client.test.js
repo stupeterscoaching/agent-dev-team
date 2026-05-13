@@ -23,6 +23,9 @@ describe('waitForApproval', () => {
     mockClient = {
       on: jest.fn(),
       off: jest.fn(),
+      channels: {
+        fetch: jest.fn().mockResolvedValue({ send: jest.fn().mockResolvedValue(undefined) }),
+      },
     };
   });
 
@@ -53,12 +56,12 @@ describe('waitForApproval', () => {
     await expect(promise).resolves.toBe(false);
   });
 
-  test('rejects on timeout', async () => {
+  test('resolves false on timeout', async () => {
     const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', 1000);
 
     jest.advanceTimersByTime(1001);
 
-    await expect(promise).rejects.toThrow('Approval timed out');
+    await expect(promise).resolves.toBe(false);
   });
 
   test('ignores messages from bots', async () => {
@@ -68,7 +71,7 @@ describe('waitForApproval', () => {
     handler({ author: { bot: true, tag: 'Bot#0000' }, channelId: 'channel-1', content: 'approve' });
 
     jest.advanceTimersByTime(1001);
-    await expect(promise).rejects.toThrow('Approval timed out');
+    await expect(promise).resolves.toBe(false);
   });
 
   test('ignores messages from wrong channel', async () => {
@@ -78,7 +81,7 @@ describe('waitForApproval', () => {
     handler({ author: { bot: false, tag: 'User#1234' }, channelId: 'channel-other', content: 'approve' });
 
     jest.advanceTimersByTime(1001);
-    await expect(promise).rejects.toThrow('Approval timed out');
+    await expect(promise).resolves.toBe(false);
   });
 
   test('removes listener after resolving', async () => {
@@ -89,6 +92,29 @@ describe('waitForApproval', () => {
     await promise;
 
     expect(mockClient.off).toHaveBeenCalledWith('messageCreate', handler);
+  });
+
+  test('removes listener on timeout', async () => {
+    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', 1000);
+    const handler = getHandler();
+
+    jest.advanceTimersByTime(1001);
+    await promise;
+
+    expect(mockClient.off).toHaveBeenCalledWith('messageCreate', handler);
+  });
+
+  test('posts timeout message to the approvals channel', async () => {
+    const mockSend = jest.fn().mockResolvedValue(undefined);
+    mockClient.channels.fetch.mockResolvedValue({ send: mockSend });
+
+    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', 1000);
+    jest.advanceTimersByTime(1001);
+    await promise;
+    await Promise.resolve(); // flush the fire-and-forget channel.send
+
+    expect(mockClient.channels.fetch).toHaveBeenCalledWith('channel-1');
+    expect(mockSend).toHaveBeenCalledWith(expect.stringContaining('Approval window closed'));
   });
 
   test('accepts approve with mixed case and surrounding whitespace', async () => {
