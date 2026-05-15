@@ -1,16 +1,4 @@
 const { Client, GatewayIntentBits, WebhookClient, Partials, ChannelType } = require('discord.js');
-// Load env manually to bypass dotenvx interference
-const fs = require('fs');
-const path = require('path');
-const envFile = fs.readFileSync(path.join(process.cwd(), '.env'), 'utf8');
-envFile.split('\n').forEach(line => {
-  const eqIndex = line.indexOf('=');
-  if (eqIndex > 0) {
-    const key = line.slice(0, eqIndex).trim();
-    const val = line.slice(eqIndex + 1).trim();
-    if (key && !key.startsWith('#')) process.env[key] = val;
-  }
-});
 
 /**
  * Creates a persistent Discord bot client for Director/Auditor/Efficiency-Director.
