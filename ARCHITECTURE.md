@@ -6,7 +6,7 @@ This document defines the complete system architecture for `agent-dev-team`. Rea
 
 ## Overview
 
-`agent-dev-team` is a tiered AI agent system that mirrors a real software development workflow. Agents communicate via Discord, manage work via GitHub Issues and Pull Requests in dedicated project repos, and are monitored by the pluggable [`efficiency-auditor`](https://github.com/usebessemer/efficiency-auditor) module.
+`agent-dev-team` is a tiered AI agent system that mirrors a real software development workflow. Agents communicate via Discord for human visibility and approval, and manage work through GitHub Issues and Pull Requests in per-project repos.
 
 Three core principles:
 
@@ -31,7 +31,7 @@ Every role in the system must be justified by the project. Agents spin up when n
 ```
 ┌─────────────────────────────────────────────────────┐
 │                    DIRECTOR                         │
-│               (Claude Opus — API)                   │
+│          (Claude Opus or Ollama — configured)       │
 │                                                     │
 │  Persistent global context                          │
 │  Collaborates with executive to build project spec  │
@@ -48,23 +48,23 @@ Every role in the system must be justified by the project. Agents spin up when n
 │  Creates project│       │  Coding stds    │
 │  GitHub repo    │       │  PR review      │
 │  GitHub Issues  │       │  PR merge       │
-│  Cost estimates │       │  Quality scores │
-│  Discord posts  │       │  Close detect   │
-└──────────┬──────┘       └────────┬────────┘
-           │ confirmed estimate     │
-           └───────────┬───────────┘
-                       │
-┌──────────────────────▼──────────────────────────────┐
+│  Cost estimates │       │  Close detect   │
+│  Discord posts  │       │                 │
+└──────────┬──────┘       └─────────────────┘
+           │ confirmed estimate
+           │
+┌──────────▼──────────────────────────────────────────┐
 │                 WORKER AGENTS                       │
-│              (Ollama — local models)                │
+│         (Claude API or Ollama — configured)         │
 │                                                     │
-│   Researcher      Writer        Coder               │
+│   Coder         Writer        Researcher            │
+│   type:feature  type:docs     type:research         │
+│   (default)                                         │
 │                                                     │
 │   Ephemeral — spawned per GitHub Issue              │
-│   Work concurrently unless blocked                  │
-│   Commit to branches in project repo                │
-│   Open PRs in project repo, then discard            │
-│   Only roles justified by the spec are spun up      │
+│   Routed by Issue label                             │
+│   Coder/Writer: branch → work → PR → discard       │
+│   Researcher: research → Issue comment → discard    │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -76,20 +76,29 @@ Every role in the system must be justified by the project. Agents spin up when n
 
 ```
 agent-dev-team repo (this repo)
-  └── Agent infrastructure only — Director, PM, Tech Lead, Coder
+  └── Agent infrastructure only
 
-bessemer-state repo (usebessemer org — post v1.0.0)
-  └── estimation-history.json — shared state across all Bessemer 
+bessemer-state repo (usebessemer/bessemer-state)
+  └── estimation-history.json — shared state across all projects
 
 {project-name} repo (created per project by PM)
   ├── GitHub Issues — project task backlog
-  ├── Coder branches — one per Issue
-  ├── Pull Requests — one per Coder branch
+  ├── Worker branches — one per Issue
+  ├── Pull Requests — one per Coder/Writer branch
   └── Merged code — final deliverables
-
 ```
 
 This keeps `agent-dev-team` clean as infrastructure-only. Project code lives in its own deployable repo.
+
+---
+
+## How Agents Communicate
+
+There is no in-process message bus. Agents coordinate through three real channels:
+
+- **Discord** — human visibility and approval gates. Bots post to the project channel via `postToChannel`; workers post via webhook via `postAsWorker`. Each project gets its own `#proj-{name}` channel created automatically by the pipeline.
+- **GitHub Issues** — the task backlog. PM creates Issues from the spec; the pipeline's `watchIssues` poller spawns workers; workers advance Issues through label states (`status:backlog` → `status:review` → `status:complete`).
+- **GitHub PRs** — the work handoff. Coder/Writer workers open PRs; the `watchPRs` poller triggers Tech Lead review; merge closes the Issue.
 
 ---
 
@@ -104,8 +113,8 @@ Gate 1 — Spec confirmation
   approve → Director spins up PM + Tech Lead
 
 Gate 2 — Cost estimate confirmation
-  PM reads estimation-history.json
-  PM builds cost estimate using local model
+  PM reads estimation-history.json from bessemer-state
+  PM builds cost estimate
   PM → #approvals (type 'approve' or 'reject')
   approve → PM creates project repo + Issues, workers spawn
 ```
@@ -114,24 +123,27 @@ Gate 2 — Cost estimate confirmation
 
 ## Worker Execution Model
 
-Workers are stateless, ephemeral agents. A fresh worker is spawned for each GitHub Issue in the project repo. Once the PR is opened, the worker is discarded.
+Workers are stateless, ephemeral agents. A fresh worker is spawned for each GitHub Issue. Routing is determined by the Issue's `type:*` label, set by the PM when it creates Issues.
 
-**Spawn → Execute → PR → Discard**
+**Coder** (`type:feature` or unlabelled)
+- Spawn → generate code (single model call) → commit → open PR → discard
 
-**Context on spawn:**
-- The GitHub Issue (the complete, self-contained task brief)
-- Tech Lead's coding standards
-- Only the specific files relevant to the task
+**Writer** (`type:docs`)
+- Spawn → generate written artifact (README, changelog, etc.) → commit → open PR → discard
 
-**Failure handling:**
-- Workers use a 3-attempt self-healing loop for commit failures
-- On 3rd failure → escalation fires → Issue marked blocked, alert posted to #alerts
-- Rejected PRs → Issue requeued → worker respawns
+**Researcher** (`type:research`)
+- Spawn → run research prompt → post findings as Issue comment → close Issue → discard
+- No branch or PR — research is delivered directly to the Issue
 
-**One worker per PR — always:**
+**Failure handling (Coder and Writer):**
+- 3-attempt self-healing loop for commit/API failures
+- On 3rd failure → escalation fires → Issue labelled `status:blocked`, alert posted to `#alerts`
+- Rejected PRs → Issue requeued → worker respawns on next poll
+
+**One worker per Issue — always:**
 ```
 One GitHub Issue = One Worker = One Branch = One PR
-No exceptions.
+No exceptions (for Coder and Writer).
 ```
 
 ---
@@ -140,29 +152,32 @@ No exceptions.
 
 ```
 PHASE 1 — BRIEF
-Executive → #director: "brief: {description}"
-Director builds spec using local model
+Executive → #director: "brief: [project-name] {description}"
+Director builds spec using configured model
 Director → #approvals (type 'approve' or 'reject')
 
 PHASE 2 — TEAM SPINUP
 Director spins up PM + Tech Lead (ephemeral, simultaneously)
+Pipeline creates #proj-{name} Discord channel + webhook
 Tech Lead defines coding standards immediately
-PM reads estimation-history.json
-PM builds cost estimate using local model
+PM reads estimation-history.json from bessemer-state
+PM builds cost estimate
 PM → #approvals (type 'approve' or 'reject')
 
 PHASE 3 — PROJECT SETUP
 PM creates GitHub repo for the project
+PM creates GitHub Labels in project repo
 PM creates GitHub Issues from spec deliverables in project repo
 
 PHASE 4 — EXECUTION
-watchIssues polls project repo for open Issues
-Coder spawns per Issue (ephemeral)
-Coder creates branch → generates code → commits → opens PR → discards
-watchPRs polls project repo for open PRs
-Tech Lead reviews PRs → scores → merges or rejects
-Rejected PRs → Issue requeued → Coder respawns
-Merged PRs → Issue closed explicitly → Tech Lead checks completion
+watchIssues polls project repo every 30s for open Issues
+Worker spawns per Issue based on type: label (Coder / Writer / Researcher)
+Coder/Writer: branch → work → commit → PR → discard
+Researcher: research → Issue comment → close Issue → discard
+watchPRs polls project repo every 30s for open PRs
+Tech Lead reviews PRs → merges or rejects
+Rejected PRs → Issue requeued → worker respawns next poll
+Merged PRs → Issue closed → Tech Lead checks completion
 
 PHASE 5 — CLOSE DETECTION
 After each merge, Tech Lead checks for 0 open PRs + 0 open Issues
@@ -173,8 +188,9 @@ When complete:
 PHASE 6 — CLOSE CONFIRMATION
 Executive reviews project repo on GitHub
 Executive → #director: "close: {project-name}"
-Pipeline writes actuals to estimation-history.json
+Pipeline writes estimate to bessemer-state estimation history
 PM + Tech Lead discard (Discord clients destroyed)
+Project channel archived (renamed archived-proj-{name}, set read-only)
 Director → #director: "Project {name} closed"
 ```
 
@@ -182,51 +198,52 @@ Director → #director: "Project {name} closed"
 
 ## Estimation Memory
 
-PM reads from a shared estimation history file on spawn.
+The PM reads from a shared estimation history in the `bessemer-state` repo on spawn. After a project closes, the pipeline writes the estimate back.
 
-Location: `projects/estimation-history.json`
+- Remote: `usebessemer/bessemer-state/estimation-history.json`
+- Local fallback: `projects/estimation-history.json` (used if bessemer-state is unreachable)
 
-Post-v1.0.0 this will move to the `bessemer-state` repo under the `usebessemer` org.
+Both locations use the same JSON schema: `{ "projects": [ { projectName, closedAt, estimate: { hours, cost, currency } } ] }`.
 
 ---
 
 ## Discord Structure
 
 ```
-📁 ORG-WIDE
+📁 ORG-WIDE (permanent)
   #director       ← briefs, specs, project status, close commands
-  #efficiency     ← token usage reports (v1.1.0)
   #approvals      ← human confirmation gates (type 'approve'/'reject')
   #alerts         ← worker escalations and system issues
+
+📁 PER-PROJECT (auto-created, auto-archived)
+  #proj-{name}    ← all agent activity for this project
+                     managers post here; workers post via webhook
+                     renamed to archived-proj-{name} on close
 ```
 
 **Bot identity model:**
 
 ```
-Persistent bots (3):
+Persistent bots (always running):
   🤖 Director
-  🤖 Auditor
-  🤖 Efficiency-Director
 
-Per-project bots (2 per project — ephemeral):
-  🤖 PM-{project-name}
-  🤖 TechLead-{project-name}
+Per-project bots (ephemeral — spawned with PM and Tech Lead):
+  🤖 PM
+  🤖 TechLead
+
+Workers post via webhook — no bot token, no persistent identity.
 ```
 
----
-
-## Known Limitations (v1.0.0)
-
-- **Tech Lead self-approval** — GitHub prevents a bot from approving its own PRs. Tech Lead uses comment + direct merge. Fix in v1.1.0: separate GitHub account for Tech Lead bot.
-- **Local model quality** — `llama3.1:8b` and `llama3.2` produce low quality code. Pipeline logic is correct. Quality improves with Claude API for workers.
-- **Project name variability** — project name is model-generated and may vary. Fix in v1.1.0: executive specifies project name in brief.
-- **Org-wide Discord channels** — all agents share org-wide channels. Per-project channels planned for v1.1.0.
-- **Octokit deprecation warnings** — harmless, resolves in future Octokit release.
+**Note on concurrency:** `PM_TOKEN` and `TECHLEAD_TOKEN` are global env vars. True multi-project concurrency is not yet supported — two projects running simultaneously would share the same PM/Tech Lead bot identity. See ROADMAP.md v1.5.0 for the planned fix.
 
 ---
 
-## Efficiency Module
+## Known Limitations (v1.2)
 
-A pluggable, standalone module. Lives in its own repo: [`efficiency-auditor`](https://github.com/usebessemer/efficiency-auditor).
-
-Import and attach to any agent system. See that repo for full architecture and contracts.
+- **Single-shot workers** — Coder and Writer generate output in one model call with no tool use or iteration. The model cannot read existing repo files, run its own output, or recover from errors in its code. Planned fix: v1.3 agentic Coder with tool use.
+- **No verification before merge** — Tech Lead reads the diff text and asks the model for a quality score. No tests run. No build happens. Planned fix: v1.3 Tech Lead runs project tests in a sandbox before merging.
+- **Hardcoded Node/Express spec** — Director always produces the same architecture regardless of brief content. A Python brief gets an Express app. Planned fix: v1.4 tech-stack-aware spec generation.
+- **Estimation is approximate** — PM asks the model for a number and multiplies by a fixed hourly rate. Historical data is written but the filter by `projectType` doesn't match (Director doesn't set `projectType` on specs yet). Planned fix: v1.4.
+- **Single project at a time** — see Discord section above. Planned fix: v1.5.
+- **30s polling latency** — Issues and PRs are detected by polling every 30 seconds. Planned fix: v1.5 GitHub webhooks.
+- **In-memory state** — `activeProjects` is in RAM. A process crash loses all in-flight project state. Planned fix: v1.5 SQLite persistence.

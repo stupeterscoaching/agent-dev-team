@@ -3,13 +3,13 @@
 [![Tests](https://github.com/usebessemer/agent-dev-team/actions/workflows/test.yml/badge.svg)](https://github.com/usebessemer/agent-dev-team/actions/workflows/test.yml)
 
 A tiered AI agent system that builds software projects autonomously. Define a project brief in Discord, and the team plans, builds, reviews, and ships it — with human approval gates at every major decision point.
- 
+
 Part of the [Bessemer Agentic](https://github.com/usebessemer) open source ecosystem.
- 
+
 ---
- 
+
 ## How it works
- 
+
 ```
 You type a brief in Discord
         ↓
@@ -17,21 +17,23 @@ Director builds a project spec → you approve
         ↓
 PM creates a GitHub repo + Issues → cost estimate → you approve
         ↓
-Coders spawn per Issue → branch → code → PR
+Workers spawn per Issue (Coder, Researcher, or Writer depending on label)
         ↓
-Tech Lead reviews PRs → scores quality → merges
+Each worker: branch → work → PR (or Issue comment for research)
+        ↓
+Tech Lead reviews PRs → merges or rejects
         ↓
 Tech Lead detects completion → notifies you
         ↓
-You type close: {project-name} → project closed
+You type close: {project-name} → project archived and closed
 ```
- 
-Every project gets its own GitHub repo. The `agent-dev-team` repo stays clean as infrastructure only.
- 
+
+Every project gets its own GitHub repo and its own Discord channel (`#proj-{name}`), created automatically. The `agent-dev-team` repo stays clean as infrastructure only.
+
 ---
- 
+
 ## Agent hierarchy
- 
+
 ```
 ┌─────────────────────────────────────────┐
 │            DIRECTOR                     │
@@ -53,165 +55,182 @@ Every project gets its own GitHub repo. The `agent-dev-team` repo stays clean as
 └──────┬──────┘         └─────────────┘
        │
 ┌──────▼──────────────────────────────────┐
-│            CODER AGENTS                 │
-│           (ephemeral)                   │
-│  One per GitHub Issue                   │
-│  Branch → code → PR → discard          │
+│          WORKER AGENTS (ephemeral)      │
+│  One per GitHub Issue, routed by label  │
+│                                         │
+│  Coder       — type:feature (default)  │
+│  Researcher  — type:research            │
+│  Writer      — type:docs                │
 └─────────────────────────────────────────┘
 ```
- 
+
 ---
- 
+
 ## Prerequisites
- 
+
 - [Node.js](https://nodejs.org) v18+
-- [Ollama](https://ollama.com) running locally with at least one model pulled. The system uses three model tiers — Director, Manager, and Worker. Larger models produce better results at the Director and Manager tiers. Smaller, faster models work well for workers.
-- A Discord server with 4 channels: `#director`, `#approvals`, `#alerts`, `#efficiency`
-- 5 Discord bots created in the [Discord Developer Portal](https://discord.com/developers/applications):
-  - `Director`, `Auditor`, `Efficiency-Director`, `PM-{project}`, `TechLead-{project}`
+- [Ollama](https://ollama.com) running locally with models pulled **or** a Claude API key (`ANTHROPIC_API_KEY`)
+- A Discord server with at least 3 channels: `#director`, `#approvals`, `#alerts`
+- 3 Discord bots (Director, PM, Tech Lead) — see Discord setup below
 - A GitHub personal access token with `repo` scope
+
 ---
 
 ## Discord setup
 
 1. Create a Discord server with these channels:
-   - `#director` — briefs, specs, close commands
-   - `#approvals` — confirmation gates
+   - `#director` — briefs, specs, status, close commands
+   - `#approvals` — human confirmation gates
    - `#alerts` — worker escalations
-   - `#efficiency` — future use
 
-2. Go to [discord.com/developers/applications](https://discord.com/developers/applications) and create 5 bots:
+   Per-project channels (`#proj-{name}`) are created automatically — you don't need to set them up.
+
+2. Go to [discord.com/developers/applications](https://discord.com/developers/applications) and create 3 bots:
    - `Director`
-   - `Auditor`
-   - `Efficiency-Director`
-   - `PM-{your-project-name}`
-   - `TechLead-{your-project-name}`
+   - `PM`
+   - `TechLead`
 
 3. For each bot:
    - Go to **Bot** → enable **Message Content Intent**
    - Copy the bot token
-   - Go to **OAuth2 → URL Generator** → select `bot` scope → invite to your server
+   - Go to **OAuth2 → URL Generator** → select `bot` scope + `Manage Channels` + `Manage Webhooks` permissions → invite to your server
 
 4. Enable **Developer Mode** in Discord (**Settings → Advanced → Developer Mode**)
 
 5. Right-click each channel and your server to copy IDs into your `.env` file
- 
+
+---
+
 ## Setup
- 
+
 ```bash
 # Clone the repo
 git clone git@github.com:usebessemer/agent-dev-team.git
 cd agent-dev-team
- 
+
 # Install dependencies
 npm install
- 
+
 # Configure environment
 cp .env.example .env
 # Edit .env and fill in your tokens — see .env.example for all required values
 
-# Run the test suite
+# Run the test suite (no credentials needed — all external services are mocked)
 npm test
 
 # Start the system
 npm start
 ```
- 
+
 ---
- 
+
 ## Usage
- 
+
 Once running, interact with the Director in your Discord `#director` channel:
- 
+
 ```
-# Start a new project
-brief: build a calculator with a web interface
- 
+# Start a new project (optional: name it with [brackets])
+brief: [my-app] build a calculator with a web interface
+
 # When prompted in #approvals, type:
 approve   ← confirms spec
 approve   ← confirms cost estimate
- 
-# When the project is complete, the Tech Lead will notify you in #director
-# Review the project repo on GitHub, then type:
-close: {project-name}
+
+# Workers run autonomously. Watch progress in #proj-my-app on Discord
+# and in the project repo on GitHub.
+
+# When the Tech Lead posts completion in #director, review the project
+# repo on GitHub, then type:
+close: my-app
 ```
- 
+
 ---
- 
+
 ## Environment variables
- 
+
 See `.env.example` for the full list. Key variables:
- 
+
 ```bash
-# Discord bot tokens
+# Discord bot tokens (required)
 DIRECTOR_TOKEN=
 PM_TOKEN=
 TECHLEAD_TOKEN=
-AUDITOR_TOKEN=
-EFFICIENCY_DIRECTOR_TOKEN=
- 
-# Discord channel IDs
+
+# Discord server
+DISCORD_GUILD_ID=
 DISCORD_CHANNEL_DIRECTOR=
 DISCORD_CHANNEL_APPROVALS=
 DISCORD_CHANNEL_ALERTS=
-DISCORD_CHANNEL_EFFICIENCY=
- 
-# GitHub
+
+# GitHub (required)
 GITHUB_TOKEN=           # personal access token with repo scope
 GITHUB_OWNER=           # your GitHub username or org
- 
-# Ollama
+
+# Inference — use Claude API, Ollama, or mix
+ANTHROPIC_API_KEY=      # optional; enables Claude API for all agents
 OLLAMA_BASE_URL=http://127.0.0.1:11434
-DIRECTOR_MODEL=llama3.1:8b
+DIRECTOR_MODEL=claude-opus-4-7   # or llama3.1:8b
 MANAGER_MODEL=llama3.1:8b
 WORKER_MODEL=llama3.2:latest
+
+# Optional: separate GitHub account for Tech Lead formal reviews
+# When set, Tech Lead uses APPROVE/REQUEST_CHANGES instead of comments
+TECHLEAD_GITHUB_TOKEN=
 ```
- 
+
 ---
- 
+
 ## Project structure
- 
+
 ```
 agent-dev-team/
 ├── src/
 │   ├── agents/
 │   │   ├── director/       ← persistent Director agent
 │   │   ├── managers/       ← PM and Tech Lead agents
-│   │   └── workers/        ← Coder agent
-│   ├── contracts/          ← base message contracts
+│   │   └── workers/        ← Coder, Researcher, Writer agents
+│   ├── config.js           ← env loading (loadEnv)
 │   ├── discord/            ← Discord client utilities
-│   └── pipeline/           ← orchestration layer
+│   └── pipeline/           ← orchestration and pollers
+├── tests/                  ← Jest test suite (155 tests, ~0.3s)
 ├── projects/
 │   └── estimation-history.json
 ├── index.js                ← entry point
 ├── .env.example
-├── ARCHITECTURE.md         ← read this before touching any code
+├── ARCHITECTURE.md         ← full system design — read before touching code
+├── ROADMAP.md              ← planned milestones through v1.5 and beyond
 ├── CONTRIBUTING.md
 └── LICENSE
 ```
- 
+
 ---
- 
-## Known limitations (v1.0.0)
- 
-- **Local model quality** — `llama3.1:8b` produces functional but low quality code. Quality improves significantly when using Claude API for workers (v1.1.0).
-- **Tech Lead self-approval** — GitHub prevents a bot from formally approving its own PRs. Tech Lead uses comment + direct merge instead.
-- **Project name variability** — project names are model-generated and may vary between runs.
-- **Org-wide Discord channels** — all agents share org-wide channels. Per-project channel creation coming in v1.1.0.
+
+## Known limitations (v1.2)
+
+- **Single-shot Coder** — workers generate code in one model call with no tool use or iteration. Output quality depends heavily on model quality and Issue detail. Agentic Coder with real tool use is planned for v1.3.
+- **No code execution** — Tech Lead reviews diff text, not running code. Tests don't run before merge. Real verification planned for v1.3.
+- **Hardcoded spec template** — Director always produces a Node/Express spec regardless of brief. Tech-stack-aware spec generation is planned for v1.4.
+- **Single project at a time** — PM and Tech Lead tokens are global. Two concurrent projects would share bot identity. True multi-project support is planned for v1.5.
+- **Tech Lead self-approval** — when `TECHLEAD_GITHUB_TOKEN` is not set, Tech Lead posts a comment instead of a formal review (GitHub prevents self-approval). Set the optional separate token to enable formal `APPROVE`/`REQUEST_CHANGES` reviews.
+
 ---
- 
+
 ## Architecture
- 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full system design, agent hierarchy, pipeline flow, and communication contracts.
- 
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full system design.
+
+## Roadmap
+
+See [ROADMAP.md](./ROADMAP.md) for planned milestones through v1.5 and the v2.x direction.
+
 ---
- 
+
 ## Contributing
- 
+
 See [CONTRIBUTING.md](./CONTRIBUTING.md).
- 
+
 ---
- 
+
 ## License
- 
+
 [MIT](./LICENSE) — Bessemer Agentic 2026
