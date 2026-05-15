@@ -80,7 +80,7 @@ OLLAMA_BASE_URL         # default: http://127.0.0.1:11434
 DIRECTOR_MODEL / MANAGER_MODEL / WORKER_MODEL
 ```
 
-**`.env` is loaded via raw `fs.readFileSync`** in every file — `dotenv` / `dotenvx` is intentionally bypassed to avoid interference. Do not change this pattern.
+**`.env` is loaded once at boot** by `src/config.js` (`loadEnv()`), called from `index.js`. `dotenv` / `dotenvx` is intentionally bypassed. No agent or module should read `.env` directly — add new env vars to `src/config.js`'s parser and `.env.example` only.
 
 ## Important caveats
 

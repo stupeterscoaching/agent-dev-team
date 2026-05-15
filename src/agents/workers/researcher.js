@@ -1,18 +1,6 @@
 const { createWebhookClient, postAsWorker } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');
 const Anthropic = require('@anthropic-ai/sdk');
-const fs = require('fs');
-const path = require('path');
-
-const envFile = fs.readFileSync(path.join(process.cwd(), '.env'), 'utf8');
-envFile.split('\n').forEach(line => {
-  const eqIndex = line.indexOf('=');
-  if (eqIndex > 0) {
-    const key = line.slice(0, eqIndex).trim();
-    const val = line.slice(eqIndex + 1).trim();
-    if (key && !key.startsWith('#')) process.env[key] = val;
-  }
-});
 
 /**
  * Researcher Agent — ephemeral, spawned per type:research GitHub Issue.
