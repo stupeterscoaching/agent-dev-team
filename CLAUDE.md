@@ -78,7 +78,6 @@ DIRECTOR_MODEL / MANAGER_MODEL / WORKER_MODEL
 
 ## Important caveats
 
-- The `managers/`, `pipeline/`, `orchestrator/`, `workers/` directories at the repo root are **legacy/unused**. All active code lives under `src/`.
 - `config.json` at the root is empty.
 - Discord bots require **Message Content Intent** enabled in the Discord Developer Portal.
 - The human approval flow (`waitForApproval` in `src/discord/client.js`) is blocking — the pipeline waits for `approve` or `reject` in `#approvals` before continuing.
