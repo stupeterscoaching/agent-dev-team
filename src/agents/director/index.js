@@ -1,18 +1,5 @@
-const { createMessage, MESSAGE_TYPES, PRIORITY_LEVELS, TIERS, AGENTS } = require('../../contracts/base');
 const { createBotClient, postToChannel, waitForApproval } = require('../../discord/client');
 const Anthropic = require('@anthropic-ai/sdk');
-const fs = require('fs');
-const path = require('path');
-
-const envFile = fs.readFileSync(path.join(process.cwd(), '.env'), 'utf8');
-envFile.split('\n').forEach(line => {
-  const eqIndex = line.indexOf('=');
-  if (eqIndex > 0) {
-    const key = line.slice(0, eqIndex).trim();
-    const val = line.slice(eqIndex + 1).trim();
-    if (key && !key.startsWith('#')) process.env[key] = val;
-  }
-});
 
 const DIRECTOR_SYSTEM_PROMPT = `You are the Director of an AI software development team. You help executives define project specifications and coordinate work across PM, Tech Lead, and Coder agents. You are precise, technical, and always follow the exact output format requested.`;
 
