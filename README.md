@@ -1,5 +1,7 @@
 # agent-dev-team
- 
+
+[![Tests](https://github.com/usebessemer/agent-dev-team/actions/workflows/test.yml/badge.svg)](https://github.com/usebessemer/agent-dev-team/actions/workflows/test.yml)
+
 A tiered AI agent system that builds software projects autonomously. Define a project brief in Discord, and the team plans, builds, reviews, and ships it — with human approval gates at every major decision point.
  
 Part of the [Bessemer Agentic](https://github.com/usebessemer) open source ecosystem.
