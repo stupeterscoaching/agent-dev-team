@@ -13,7 +13,6 @@ envFile.split('\n').forEach(line => {
 // Suppress Octokit request logging
 process.env.NODE_DEBUG = '';
 
-const { createMessage, MESSAGE_TYPES, PRIORITY_LEVELS, TIERS, AGENTS } = require('../../contracts/base');
 const { createBotClient, postToChannel, waitForApproval } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');
 

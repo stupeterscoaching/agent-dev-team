@@ -1,4 +1,3 @@
-const { createMessage, MESSAGE_TYPES, PRIORITY_LEVELS, TIERS, AGENTS } = require('../../contracts/base');
 const { createBotClient, postToChannel, waitForApproval } = require('../../discord/client');
 const Anthropic = require('@anthropic-ai/sdk');
 const fs = require('fs');
