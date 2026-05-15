@@ -1,4 +1,3 @@
-const { createMessage, MESSAGE_TYPES, PRIORITY_LEVELS, TIERS, AGENTS } = require('../../contracts/base');
 const { createWebhookClient, postAsWorker } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');
 const fs = require('fs');

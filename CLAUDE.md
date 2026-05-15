@@ -52,9 +52,15 @@ Because workers are stateless (no shared memory), every GitHub Issue must be ent
 | Estimation memory | `projects/estimation-history.json` |
 | Project spec | `projects/{name}/project.json` |
 
-### Agent message contracts
+### How agents communicate
 
-All inter-agent messages use the base contract in `src/contracts/base.js` (`createMessage()`). Types: `task`, `result`, `insight`, `escalation`, `feedback`. See ARCHITECTURE.md for payload shapes per message type.
+There is no in-process message bus. Agents coordinate through three real channels:
+
+- **Discord** — human visibility and approval gates. Bots post to project channels via `postToChannel`; workers post via webhook via `postAsWorker`.
+- **GitHub Issues** — the task backlog. PM creates Issues from the spec; the pipeline's `watchIssues` poller spawns workers; workers move Issues through `status:backlog` → `status:review` → `status:complete` via label updates.
+- **GitHub PRs** — the work handoff. Workers open PRs; the `watchPRs` poller triggers Tech Lead review; merge closes the Issue.
+
+State that needs to persist beyond a single run lives in `projects/estimation-history.json` (local cache) and the `bessemer-state` repo (cross-project).
 
 ## Environment setup
 

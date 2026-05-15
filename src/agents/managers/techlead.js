@@ -1,4 +1,3 @@
-const { createMessage, MESSAGE_TYPES, PRIORITY_LEVELS, TIERS, AGENTS } = require('../../contracts/base');
 const { createBotClient, postToChannel } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');
 const fs = require('fs');
