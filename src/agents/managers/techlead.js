@@ -1,15 +1,8 @@
 const { createBotClient, postToChannel } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');
+const Sandbox = require('../../sandbox');
 // Suppress Octokit request logging
 process.env.NODE_DEBUG = '';
-
-/**
- * Tech Lead Agent — ephemeral, spawned per project alongside PM.
- * Responsible for:
- * - Defining coding standards for the project
- * - Reviewing worker PRs and scoring quality
- * - Merging or rejecting PRs in the project repo
- */
 
 class TechLeadAgent {
   constructor(spec, projectChannels) {
@@ -31,9 +24,6 @@ class TechLeadAgent {
     });
   }
 
-  /**
-   * Main entry point — defines coding standards and starts listening for PRs.
-   */
   async run() {
     await this.ready;
     await this.postToManagers(`🔧 Tech Lead online for project: **${this.spec.projectName}**`);
@@ -41,10 +31,6 @@ class TechLeadAgent {
     await this.postToManagers(`📐 Coding standards set. Watching for PRs.`);
   }
 
-  /**
-   * Defines coding standards for this project.
-   * @returns {object} standards
-   */
   async defineCodingStandards() {
     const { techStack } = this.spec.architecture;
 
@@ -69,122 +55,131 @@ class TechLeadAgent {
     return this.standards;
   }
 
-  /**
-   * Reviews a PR opened by a worker in the project repo.
-   * Scores quality, posts comment, merges or rejects.
-   * @param {number} prNumber
-   * @param {object} projectRepo — { owner, repo, defaultBranch }
-   * @returns {object} review result
-   */
   async reviewPR(prNumber, projectRepo) {
     const owner = projectRepo?.owner || this.owner;
     const repo = projectRepo?.repo || this.repo;
 
     await this.postToManagers(`🔍 Reviewing PR #${prNumber} in ${owner}/${repo}...`);
 
-    // Fetch PR details
-    const pr = await this.octokit.pulls.get({
-      owner,
-      repo,
-      pull_number: prNumber
-    });
+    const pr = await this.octokit.pulls.get({ owner, repo, pull_number: prNumber });
+    const diff = await this.octokit.pulls.listFiles({ owner, repo, pull_number: prNumber });
+    const filesChanged = diff.data.map(f => ({ filename: f.filename, changes: f.changes, patch: f.patch }));
 
-    // Fetch PR files
-    const diff = await this.octokit.pulls.listFiles({
-      owner,
-      repo,
-      pull_number: prNumber
-    });
+    // Run tests in a sandbox on the PR branch before scoring
+    const prBranch = pr.data.head.ref;
+    const testResult = await this.runTestsForPR(prBranch, owner, repo);
 
-    const filesChanged = diff.data.map(f => ({
-      filename: f.filename,
-      changes: f.changes,
-      patch: f.patch
-    }));
+    if (testResult.passed === true) {
+      await this.postToManagers(`✅ Tests passed`);
+    } else if (testResult.passed === false) {
+      await this.postToManagers(`❌ Tests failed:\n\`\`\`\n${testResult.output.slice(0, 500)}\n\`\`\``);
+    } else {
+      await this.postToManagers(`⚠️ Tests not run: ${testResult.output}`);
+    }
 
-    // Score the PR with the local model
-    const score = await this.scorePR(pr.data, filesChanged);
+    const score = await this.scorePR(pr.data, filesChanged, testResult);
 
-    if (score.score >= 3) {
+    // Tests failed → always reject, regardless of score
+    const approved = testResult.passed !== false && score.score >= 3;
+
+    const reviewBody = approved
+      ? `✅ Tech Lead review complete.\n\n**Score: ${score.score}/10**\n\n${score.feedback}`
+      : testResult.passed === false
+        ? `❌ Tech Lead review — tests failed.\n\n**Score: ${score.score}/10**\n\n${score.feedback}\n\n**Test output:**\n\`\`\`\n${testResult.output.slice(0, 800)}\n\`\`\``
+        : `❌ Tech Lead review — changes needed.\n\n**Score: ${score.score}/10**\n\n${score.feedback}`;
+
+    if (approved) {
       if (this.hasSeparateGitHubAccount) {
-        await this.octokit.pulls.createReview({
-          owner,
-          repo,
-          pull_number: prNumber,
-          event: 'APPROVE',
-          body: `✅ Tech Lead review complete.\n\n**Score: ${score.score}/10**\n\n${score.feedback}`
-        });
+        await this.octokit.pulls.createReview({ owner, repo, pull_number: prNumber, event: 'APPROVE', body: reviewBody });
       } else {
-        await this.octokit.issues.createComment({
-          owner,
-          repo,
-          issue_number: prNumber,
-          body: `✅ Tech Lead review complete.\n\n**Score: ${score.score}/10**\n\n${score.feedback}`
-        });
+        await this.octokit.issues.createComment({ owner, repo, issue_number: prNumber, body: reviewBody });
       }
 
-      await this.octokit.pulls.merge({
-        owner,
-        repo,
-        pull_number: prNumber,
-        merge_method: 'squash'
-      });
+      await this.octokit.pulls.merge({ owner, repo, pull_number: prNumber, merge_method: 'squash' });
 
-      // Close the Issue
       const issueMatch = pr.data.body?.match(/Closes #(\d+)/);
       if (issueMatch) {
-        await this.octokit.issues.update({
-          owner,
-          repo,
-          issue_number: parseInt(issueMatch[1]),
-          state: 'closed'
-        });
+        await this.octokit.issues.update({ owner, repo, issue_number: parseInt(issueMatch[1]), state: 'closed' });
         console.log(`[TechLead] Closed Issue #${issueMatch[1]}`);
       }
 
       console.log(`[TechLead] ✅ PR #${prNumber} merged in ${owner}/${repo}. Score: ${score.score}/10`);
-      await this.postToManagers(
-        `✅ PR #${prNumber} merged in ${owner}/${repo}. Score: ${score.score}/10\n${score.feedback}`
-      );
+      await this.postToManagers(`✅ PR #${prNumber} merged. Score: ${score.score}/10\n${score.feedback}`);
 
       await new Promise(resolve => setTimeout(resolve, 8000));
       await this.checkProjectComplete(owner, repo, prNumber);
 
-      return { approved: true, score };
-
+      return { approved: true, score, testResult };
     } else {
       if (this.hasSeparateGitHubAccount) {
-        await this.octokit.pulls.createReview({
-          owner,
-          repo,
-          pull_number: prNumber,
-          event: 'REQUEST_CHANGES',
-          body: `❌ Tech Lead review — changes needed.\n\n**Score: ${score.score}/10**\n\n${score.feedback}`
-        });
+        await this.octokit.pulls.createReview({ owner, repo, pull_number: prNumber, event: 'REQUEST_CHANGES', body: reviewBody });
       } else {
-        await this.octokit.issues.createComment({
-          owner,
-          repo,
-          issue_number: prNumber,
-          body: `❌ Tech Lead review — changes needed.\n\n**Score: ${score.score}/10**\n\n${score.feedback}`
-        });
+        await this.octokit.issues.createComment({ owner, repo, issue_number: prNumber, body: reviewBody });
       }
 
-      await this.postToManagers(
-        `❌ PR #${prNumber} rejected in ${owner}/${repo}. Score: ${score.score}/10\n${score.feedback}`
-      );
-
-      return { approved: false, score };
+      await this.postToManagers(`❌ PR #${prNumber} rejected. Score: ${score.score}/10\n${score.feedback}`);
+      return { approved: false, score, testResult };
     }
   }
 
   /**
-   * Scores a PR using the local model.
-   * @param {object} pr
-   * @param {array} files
-   * @returns {object} { score, feedback }
+   * Creates a Sandbox on the PR branch, runs the test suite, and tears down.
+   * Returns { passed, output } — passed is null if tests could not be run.
    */
-  async scorePR(pr, files) {
+  async runTestsForPR(branch, owner, repo) {
+    const sandbox = new Sandbox({
+      repoUrl: `https://github.com/${owner}/${repo}.git`,
+      branch,
+      token: process.env.GITHUB_TOKEN,
+    });
+
+    try {
+      await sandbox.boot();
+      return await this.runTests(sandbox);
+    } catch (err) {
+      console.error(`[TechLead] Sandbox error for branch ${branch}: ${err.message}`);
+      return { passed: null, output: `Sandbox error: ${err.message}` };
+    } finally {
+      await sandbox.teardown();
+    }
+  }
+
+  /**
+   * Detects the test command from package.json and runs it inside the sandbox.
+   * Returns { passed: boolean|null, output: string }
+   *   passed = true  → tests ran and all passed
+   *   passed = false → tests ran and failed
+   *   passed = null  → could not determine (no package.json, no test script)
+   */
+  async runTests(sandbox) {
+    let pkg;
+    try {
+      pkg = JSON.parse(await sandbox.readFile('package.json'));
+    } catch {
+      return { passed: null, output: 'No package.json found' };
+    }
+
+    const testScript = pkg.scripts?.test;
+    const noOpScript = 'echo "Error: no test specified" && exit 1';
+    if (!testScript || testScript === noOpScript) {
+      return { passed: null, output: 'No test script defined in package.json' };
+    }
+
+    const install = await sandbox.exec('npm install');
+    if (install.exitCode !== 0) {
+      return { passed: false, output: `npm install failed:\n${install.stderr || install.stdout}` };
+    }
+
+    const test = await sandbox.exec('npm test');
+    const output = [test.stdout, test.stderr].filter(Boolean).join('\n');
+    return { passed: test.exitCode === 0, output };
+  }
+
+  async scorePR(pr, files, testResult = null) {
+    const testContext = testResult
+      ? `\nTest results: ${testResult.passed === true ? 'PASSED' : testResult.passed === false ? 'FAILED' : 'NOT RUN'}\n${testResult.output.slice(0, 400)}`
+      : '';
+
     const prompt = `You are a Tech Lead reviewing a pull request.
 
 Coding standards:
@@ -192,7 +187,7 @@ ${JSON.stringify(this.standards?.rules || [], null, 2)}
 
 PR title: ${pr.title}
 PR description: ${pr.body}
-
+${testContext}
 Files changed:
 ${JSON.stringify(files, null, 2)}
 
@@ -208,12 +203,7 @@ Return ONLY valid JSON with no other text:
     const response = await fetch(`${this.ollamaUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.model,
-        prompt,
-        stream: false,
-        options: { temperature: 0.1 }
-      })
+      body: JSON.stringify({ model: this.model, prompt, stream: false, options: { temperature: 0.1 } }),
     });
 
     const data = await response.json();
@@ -229,51 +219,34 @@ Return ONLY valid JSON with no other text:
     }
   }
 
-  /**
- * Checks if all PRs and Issues in the project repo are closed.
- * Posts a completion summary to #director if done.
- */
-async checkProjectComplete(owner, repo) {
-  try {
-    const { data: openPRs } = await this.octokit.pulls.list({
-      owner, repo, state: 'open'
-    });
+  async checkProjectComplete(owner, repo) {
+    try {
+      const { data: openPRs } = await this.octokit.pulls.list({ owner, repo, state: 'open' });
+      const { data: openIssues } = await this.octokit.issues.listForRepo({ owner, repo, state: 'open' });
+      const filteredIssues = openIssues.filter(i => !i.pull_request && !i.html_url.includes('/pull/'));
 
-    const { data: openIssues } = await this.octokit.issues.listForRepo({
-      owner, repo, state: 'open'
-    });
+      console.log(`[TechLead] checkProjectComplete: ${openPRs.length} open PRs, ${filteredIssues.length} open Issues`);
 
-    const filteredIssues = openIssues.filter(i => !i.pull_request && !i.html_url.includes('/pull/'));
-
-    console.log(`[TechLead] checkProjectComplete: ${openPRs.length} open PRs, ${filteredIssues.length} open Issues`);
-
-    if (openPRs.length === 0 && filteredIssues.length === 0) {
-      console.log(`[TechLead] Project ${this.spec.projectName} appears complete.`);
-      await postToChannel(
-        this.client,
-        process.env.DISCORD_CHANNEL_DIRECTOR,
-        `✅ **Project ${this.spec.projectName} appears complete.**\n\n` +
-        `All PRs merged and Issues closed.\n` +
-        `Project repo: https://github.com/${owner}/${repo}\n\n` +
-        `Type \`close: ${this.spec.projectName}\` to confirm and close, or open new Issues to continue.`
-      );
+      if (openPRs.length === 0 && filteredIssues.length === 0) {
+        console.log(`[TechLead] Project ${this.spec.projectName} appears complete.`);
+        await postToChannel(
+          this.client,
+          process.env.DISCORD_CHANNEL_DIRECTOR,
+          `✅ **Project ${this.spec.projectName} appears complete.**\n\n` +
+          `All PRs merged and Issues closed.\n` +
+          `Project repo: https://github.com/${owner}/${repo}\n\n` +
+          `Type \`close: ${this.spec.projectName}\` to confirm and close, or open new Issues to continue.`
+        );
+      }
+    } catch (err) {
+      console.error(`[TechLead] Error checking project completion: ${err.message}`);
     }
-  } catch (err) {
-    console.error(`[TechLead] Error checking project completion: ${err.message}`);
   }
-}
 
-  /**
-   * Posts a message to the project's managers channel.
-   * @param {string} content
-   */
   async postToManagers(content) {
     await postToChannel(this.client, this.projectChannels.managers, content);
   }
 
-  /**
-   * Discards this Tech Lead agent — called when project closes.
-   */
   async discard() {
     console.log(`[TechLead] Discarding for project: ${this.spec.projectName}`);
     await this.client.destroy();
