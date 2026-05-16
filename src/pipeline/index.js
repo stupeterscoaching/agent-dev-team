@@ -203,6 +203,7 @@ class Pipeline {
     const newEntry = {
       projectName,
       closedAt: new Date().toISOString(),
+      projectType: project.spec?.projectType || null,
       estimate: { hours: estimate.hours, cost: estimate.cost, currency: estimate.currency },
       actuals: { hours: estimate.hours, cost: estimate.cost, currency: estimate.currency },
       variance: 0,
