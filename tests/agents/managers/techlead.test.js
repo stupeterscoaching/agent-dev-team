@@ -203,50 +203,54 @@ describe('TechLeadAgent.runTestsForPR', () => {
   });
 });
 
-// ── scorePR ───────────────────────────────────────────────────────────────────
+// ── getQualitativeReview ──────────────────────────────────────────────────────
 
-describe('TechLeadAgent.scorePR', () => {
+describe('TechLeadAgent.getQualitativeReview', () => {
   let agent;
 
   beforeEach(() => {
     agent = makeAgent();
   });
 
-  test('returns parsed score from valid model JSON response', async () => {
+  test('returns parsed commentary from valid model JSON response', async () => {
     global.fetch = jest.fn().mockResolvedValue({
-      json: jest.fn().mockResolvedValue({ response: '{"score":7,"feedback":"Good work","issues":[]}' }),
+      json: jest.fn().mockResolvedValue({
+        response: '{"commentary":"Good naming, error handling could be tighter","suggestions":["add try/catch"]}',
+      }),
     });
 
-    const result = await agent.scorePR({ title: 'Add feature', body: 'description' }, []);
-    expect(result.score).toBe(7);
-    expect(result.feedback).toBe('Good work');
+    const result = await agent.getQualitativeReview({ title: 'Add feature', body: 'description' }, []);
+    expect(result.commentary).toBe('Good naming, error handling could be tighter');
+    expect(result.suggestions).toEqual(['add try/catch']);
   });
 
-  test('returns fallback score 5 when model returns non-JSON', async () => {
+  test('returns fallback commentary when model returns non-JSON', async () => {
     global.fetch = jest.fn().mockResolvedValue({
       json: jest.fn().mockResolvedValue({ response: 'Looks good to me!' }),
     });
 
-    const result = await agent.scorePR({ title: 'Add feature', body: 'description' }, []);
-    expect(result.score).toBe(5);
-    expect(result.feedback).toContain('manually');
+    const result = await agent.getQualitativeReview({ title: 'Add feature', body: 'description' }, []);
+    expect(result.commentary).toContain('details');
+    expect(result.suggestions).toEqual([]);
   });
 
-  test('extracts JSON from response even with surrounding text', async () => {
+  test('does not include a score field in the return value', async () => {
     global.fetch = jest.fn().mockResolvedValue({
-      json: jest.fn().mockResolvedValue({ response: 'Here is my review: {"score":8,"feedback":"Solid","issues":[]}' }),
+      json: jest.fn().mockResolvedValue({
+        response: '{"commentary":"Looks solid","suggestions":[]}',
+      }),
     });
 
-    const result = await agent.scorePR({ title: 'Add feature', body: 'description' }, []);
-    expect(result.score).toBe(8);
+    const result = await agent.getQualitativeReview({ title: 'Add feature', body: 'description' }, []);
+    expect(result).not.toHaveProperty('score');
   });
 
   test('includes test result context in the prompt when provided', async () => {
     global.fetch = jest.fn().mockResolvedValue({
-      json: jest.fn().mockResolvedValue({ response: '{"score":7,"feedback":"ok","issues":[]}' }),
+      json: jest.fn().mockResolvedValue({ response: '{"commentary":"ok","suggestions":[]}' }),
     });
 
-    await agent.scorePR(
+    await agent.getQualitativeReview(
       { title: 'Add feature', body: 'description' },
       [],
       { passed: false, output: '3 tests failed' }
@@ -256,18 +260,39 @@ describe('TechLeadAgent.scorePR', () => {
     expect(body.prompt).toContain('FAILED');
     expect(body.prompt).toContain('3 tests failed');
   });
+
+  test('prompt does not ask for a numeric score', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ response: '{"commentary":"ok","suggestions":[]}' }),
+    });
+
+    await agent.getQualitativeReview({ title: 'Add feature', body: 'description' }, []);
+
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.prompt).not.toContain('Score this PR');
+    expect(body.prompt).not.toContain('1-10');
+  });
 });
 
 // ── reviewPR ─────────────────────────────────────────────────────────────────
-// runTestsForPR is mocked here — reviewPR logic is what's under test.
+// runTestsForPR and getQualitativeReview are mocked — decision logic is under test.
 
 describe('TechLeadAgent.reviewPR', () => {
   let agent;
+
+  function mockReview() {
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({
+        response: '{"commentary":"Looks solid","suggestions":[]}',
+      }),
+    });
+  }
 
   beforeEach(() => {
     jest.useFakeTimers();
     agent = makeAgent();
     agent.runTestsForPR = jest.fn().mockResolvedValue({ passed: true, output: '5 tests passed' });
+    mockReview();
   });
 
   afterEach(() => {
@@ -280,37 +305,13 @@ describe('TechLeadAgent.reviewPR', () => {
     return promise;
   }
 
-  function mockScore(score) {
-    global.fetch = jest.fn().mockResolvedValue({
-      json: jest.fn().mockResolvedValue({ response: `{"score":${score},"feedback":"feedback","issues":[]}` }),
-    });
-  }
-
-  test('merges PR when tests pass and score >= 3', async () => {
-    mockScore(7);
+  test('merges PR when tests pass', async () => {
     const result = await runReviewPR(agent, 1, projectRepo);
     expect(result.approved).toBe(true);
     expect(mockOctokit.pulls.merge).toHaveBeenCalled();
   });
 
-  test('rejects PR when tests fail, regardless of score', async () => {
-    mockScore(9);
-    agent.runTestsForPR.mockResolvedValue({ passed: false, output: '5 tests failed' });
-
-    const result = await runReviewPR(agent, 1, projectRepo);
-    expect(result.approved).toBe(false);
-    expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
-  });
-
-  test('rejects PR when score < 3 even if tests pass', async () => {
-    mockScore(2);
-    const result = await runReviewPR(agent, 1, projectRepo);
-    expect(result.approved).toBe(false);
-    expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
-  });
-
-  test('merges PR when tests not run (null) and score >= 3', async () => {
-    mockScore(7);
+  test('merges PR when tests not run (no package.json)', async () => {
     agent.runTestsForPR.mockResolvedValue({ passed: null, output: 'No package.json found' });
 
     const result = await runReviewPR(agent, 1, projectRepo);
@@ -318,49 +319,61 @@ describe('TechLeadAgent.reviewPR', () => {
     expect(mockOctokit.pulls.merge).toHaveBeenCalled();
   });
 
-  test('posts approval comment with score before merging', async () => {
-    mockScore(8);
+  test('rejects PR when tests fail', async () => {
+    agent.runTestsForPR.mockResolvedValue({ passed: false, output: '5 tests failed' });
+
+    const result = await runReviewPR(agent, 1, projectRepo);
+    expect(result.approved).toBe(false);
+    expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
+  });
+
+  test('approval comment contains "Tests passed"', async () => {
     await runReviewPR(agent, 1, projectRepo);
     expect(mockOctokit.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('Score: 8/10') })
+      expect.objectContaining({ body: expect.stringContaining('Tests passed') })
     );
   });
 
-  test('rejection comment includes "tests failed" when tests failed', async () => {
-    mockScore(9);
-    agent.runTestsForPR.mockResolvedValue({ passed: false, output: 'Test suite failed' });
+  test('rejection comment contains "Tests failed" and test output', async () => {
+    agent.runTestsForPR.mockResolvedValue({ passed: false, output: 'FAIL src/app.test.js' });
 
     await runReviewPR(agent, 1, projectRepo);
     expect(mockOctokit.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('tests failed') })
+      expect.objectContaining({ body: expect.stringContaining('Tests failed') })
+    );
+    expect(mockOctokit.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('FAIL src/app.test.js') })
     );
   });
 
-  test('rejection comment includes "changes needed" when score too low', async () => {
-    mockScore(1);
+  test('approval comment includes qualitative commentary', async () => {
     await runReviewPR(agent, 1, projectRepo);
     expect(mockOctokit.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('changes needed') })
+      expect.objectContaining({ body: expect.stringContaining('Looks solid') })
     );
+  });
+
+  test('approval comment does not contain a numeric score', async () => {
+    await runReviewPR(agent, 1, projectRepo);
+    const call = mockOctokit.issues.createComment.mock.calls[0][0];
+    expect(call.body).not.toMatch(/Score:\s*\d+\/10/);
   });
 
   test('closes linked issue after merge', async () => {
-    mockScore(6);
     await runReviewPR(agent, 1, projectRepo);
     expect(mockOctokit.issues.update).toHaveBeenCalledWith(
       expect.objectContaining({ issue_number: 5, state: 'closed' })
     );
   });
 
-  test('result includes testResult', async () => {
-    mockScore(7);
+  test('result includes testResult and review, not score', async () => {
     const result = await runReviewPR(agent, 1, projectRepo);
     expect(result.testResult).toBeDefined();
-    expect(result.testResult.passed).toBe(true);
+    expect(result.review).toBeDefined();
+    expect(result).not.toHaveProperty('score');
   });
 
   test('uses head.ref from PR data as the sandbox branch', async () => {
-    mockScore(7);
     await runReviewPR(agent, 1, projectRepo);
     expect(agent.runTestsForPR).toHaveBeenCalledWith('coder/5/add-feature', 'test-owner', 'test-repo');
   });
@@ -371,11 +384,20 @@ describe('TechLeadAgent.reviewPR', () => {
 describe('TechLeadAgent.reviewPR — separate GitHub account', () => {
   let agent;
 
+  function mockReview() {
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({
+        response: '{"commentary":"Looks solid","suggestions":[]}',
+      }),
+    });
+  }
+
   beforeEach(() => {
     jest.useFakeTimers();
     process.env.TECHLEAD_GITHUB_TOKEN = 'separate-token';
     agent = makeAgent();
     agent.runTestsForPR = jest.fn().mockResolvedValue({ passed: true, output: '5 tests passed' });
+    mockReview();
   });
 
   afterEach(() => {
@@ -389,18 +411,11 @@ describe('TechLeadAgent.reviewPR — separate GitHub account', () => {
     return promise;
   }
 
-  function mockScore(score) {
-    global.fetch = jest.fn().mockResolvedValue({
-      json: jest.fn().mockResolvedValue({ response: `{"score":${score},"feedback":"feedback","issues":[]}` }),
-    });
-  }
-
   test('hasSeparateGitHubAccount is true when TECHLEAD_GITHUB_TOKEN is set', () => {
     expect(agent.hasSeparateGitHubAccount).toBe(true);
   });
 
-  test('uses pulls.createReview APPROVE instead of comment on approval', async () => {
-    mockScore(7);
+  test('uses pulls.createReview APPROVE when tests pass', async () => {
     await runReviewPR(agent, 1, projectRepo);
     expect(mockOctokit.pulls.createReview).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'APPROVE', pull_number: 1 })
@@ -408,39 +423,36 @@ describe('TechLeadAgent.reviewPR — separate GitHub account', () => {
     expect(mockOctokit.issues.createComment).not.toHaveBeenCalled();
   });
 
-  test('uses pulls.createReview REQUEST_CHANGES on rejection', async () => {
-    mockScore(1);
+  test('uses pulls.createReview REQUEST_CHANGES when tests fail', async () => {
+    agent.runTestsForPR.mockResolvedValue({ passed: false, output: 'Tests failed' });
+
     await runReviewPR(agent, 1, projectRepo);
     expect(mockOctokit.pulls.createReview).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'REQUEST_CHANGES', pull_number: 1 })
     );
     expect(mockOctokit.issues.createComment).not.toHaveBeenCalled();
-  });
-
-  test('REQUEST_CHANGES when tests fail even with high score', async () => {
-    mockScore(9);
-    agent.runTestsForPR.mockResolvedValue({ passed: false, output: 'Tests failed' });
-
-    await runReviewPR(agent, 1, projectRepo);
-    expect(mockOctokit.pulls.createReview).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'REQUEST_CHANGES' })
-    );
     expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
   });
 
-  test('approval review body contains score', async () => {
-    mockScore(8);
+  test('approval review body contains "Tests passed"', async () => {
     await runReviewPR(agent, 1, projectRepo);
     expect(mockOctokit.pulls.createReview).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('Score: 8/10') })
+      expect.objectContaining({ body: expect.stringContaining('Tests passed') })
     );
   });
 
-  test('rejection review body contains changes needed', async () => {
-    mockScore(2);
+  test('rejection review body contains "Tests failed"', async () => {
+    agent.runTestsForPR.mockResolvedValue({ passed: false, output: 'Test suite failed' });
+
     await runReviewPR(agent, 1, projectRepo);
     expect(mockOctokit.pulls.createReview).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('changes needed') })
+      expect.objectContaining({ body: expect.stringContaining('Tests failed') })
     );
+  });
+
+  test('review body does not contain a numeric score', async () => {
+    await runReviewPR(agent, 1, projectRepo);
+    const call = mockOctokit.pulls.createReview.mock.calls[0][0];
+    expect(call.body).not.toMatch(/Score:\s*\d+\/10/);
   });
 });
