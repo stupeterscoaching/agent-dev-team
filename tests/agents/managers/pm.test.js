@@ -120,7 +120,7 @@ describe('PMAgent.buildEstimate', () => {
     });
   });
 
-  test('cost equals hours * 20', async () => {
+  test('cost equals hours * hourly rate (default 20)', async () => {
     const estimate = await agent.buildEstimate({ projects: [] });
     expect(estimate.cost).toBe(estimate.hours * 20);
   });
@@ -130,7 +130,24 @@ describe('PMAgent.buildEstimate', () => {
     expect(estimate.confidence).toBe('low');
   });
 
-  test('confidence is "medium" when relevant history exists', async () => {
+  test('notes indicate cold start when no history', async () => {
+    const estimate = await agent.buildEstimate({ projects: [] });
+    expect(estimate.notes.toLowerCase()).toContain('cold start');
+  });
+
+  test('confidence is "medium" when at least 3 matching history entries exist', async () => {
+    const history = {
+      projects: [
+        { projectType: 'web-app', hours: 10 },
+        { projectType: 'web-app', hours: 12 },
+        { projectType: 'web-app', hours: 14 },
+      ],
+    };
+    const estimate = await agent.buildEstimate(history);
+    expect(estimate.confidence).toBe('medium');
+  });
+
+  test('confidence is "low" when fewer than 3 matching history entries exist', async () => {
     const history = {
       projects: [
         { projectType: 'web-app', hours: 10 },
@@ -138,7 +155,79 @@ describe('PMAgent.buildEstimate', () => {
       ],
     };
     const estimate = await agent.buildEstimate(history);
-    expect(estimate.confidence).toBe('medium');
+    expect(estimate.confidence).toBe('low');
+  });
+
+  test('uses historical mean for hours instead of LLM when sample size met', async () => {
+    const history = {
+      projects: [
+        { projectType: 'web-app', hours: 10 },
+        { projectType: 'web-app', hours: 20 },
+        { projectType: 'web-app', hours: 30 },
+      ],
+    };
+    const estimate = await agent.buildEstimate(history);
+    expect(estimate.hours).toBe(20); // mean of 10, 20, 30
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('falls back to LLM when sample is below minimum (< 3)', async () => {
+    const history = {
+      projects: [
+        { projectType: 'web-app', hours: 10 },
+        { projectType: 'web-app', hours: 20 },
+      ],
+    };
+    const estimate = await agent.buildEstimate(history);
+    expect(global.fetch).toHaveBeenCalled();
+    expect(estimate.confidence).toBe('low');
+  });
+
+  test('notes mention insufficient history count when below minimum', async () => {
+    const history = {
+      projects: [
+        { projectType: 'web-app', hours: 10 },
+      ],
+    };
+    const estimate = await agent.buildEstimate(history);
+    expect(estimate.notes).toContain('1/3');
+  });
+
+  test('uses actuals.hours from new-format history entries', async () => {
+    const history = {
+      projects: [
+        { projectType: 'web-app', estimate: { hours: 5 }, actuals: { hours: 10 } },
+        { projectType: 'web-app', estimate: { hours: 8 }, actuals: { hours: 20 } },
+        { projectType: 'web-app', estimate: { hours: 6 }, actuals: { hours: 30 } },
+      ],
+    };
+    const estimate = await agent.buildEstimate(history);
+    expect(estimate.hours).toBe(20); // mean of actuals: (10+20+30)/3
+  });
+
+  test('only matches history entries for the same projectType', async () => {
+    const history = {
+      projects: [
+        { projectType: 'cli', hours: 100 },
+        { projectType: 'cli', hours: 100 },
+        { projectType: 'cli', hours: 100 },
+        { projectType: 'web-app', hours: 10 },
+      ],
+    };
+    // Only 1 web-app entry — below minimum, falls back to LLM
+    const estimate = await agent.buildEstimate(history);
+    expect(global.fetch).toHaveBeenCalled();
+  });
+
+  test('falls back to LLM when history has no matching projectType', async () => {
+    const history = {
+      projects: [
+        { projectType: 'cli', hours: 50 },
+      ],
+    };
+    const estimate = await agent.buildEstimate(history);
+    expect(global.fetch).toHaveBeenCalled();
+    expect(estimate.confidence).toBe('low');
   });
 
   test('breakdown has one entry per deliverable', async () => {
