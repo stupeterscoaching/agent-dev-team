@@ -215,93 +215,183 @@ class Director {
   }
 
   async _buildSpecWithClaude(brief, projectName = null) {
-    const response = await this.anthropic.messages.create({
-      model: this.model,
-      max_tokens: 512,
-      system: [
-        {
-          type: 'text',
-          text: DIRECTOR_SYSTEM_PROMPT,
-          cache_control: { type: 'ephemeral' }
-        }
-      ],
-      messages: [
-        {
-          role: 'user',
-          content: `Given this project brief: "${brief}"\n\nRespond with ONLY valid JSON (no markdown, no backticks):\n{"projectName":"kebab-case-name","desiredOutcome":"one sentence describing what success looks like"}`
-        }
-      ]
-    });
+    const MAX_ATTEMPTS = 3;
+    let lastErrors = [];
+    const basePrompt = this._buildSpecPrompt(brief, projectName);
 
-    const text = response.content[0].text.trim();
-    let resolvedName = projectName || 'new-project';
-    let desiredOutcome = brief;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const prompt = attempt === 0
+        ? basePrompt
+        : `${basePrompt}\n\nPrevious attempt had these validation errors: ${lastErrors.join('; ')}. Fix them and return valid JSON.`;
 
-    try {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (!projectName) {
-          resolvedName = (parsed.projectName || '').toLowerCase()
-            .replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 30)
-            || 'new-project';
+      const response = await this.anthropic.messages.create({
+        model: this.model,
+        max_tokens: 2048,
+        system: [
+          {
+            type: 'text',
+            text: DIRECTOR_SYSTEM_PROMPT,
+            cache_control: { type: 'ephemeral' }
+          }
+        ],
+        messages: [{ role: 'user', content: prompt }]
+      });
+
+      const text = response.content[0].text.trim();
+      try {
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          const errors = this._validateSpec(parsed);
+          if (!errors.length) {
+            if (projectName) parsed.projectName = projectName;
+            console.log(`[Director] Spec generated for: ${parsed.projectName} (${parsed.projectType})`);
+            return this._wrapSpec(parsed, brief);
+          }
+          lastErrors = errors;
+          console.warn(`[Director] Spec validation failed (attempt ${attempt + 1}):`, errors.join(', '));
         }
-        desiredOutcome = parsed.desiredOutcome || brief;
+      } catch (err) {
+        lastErrors = [`JSON parse error: ${err.message}`];
+        console.error('[Director] Failed to parse spec JSON:', err.message);
       }
-    } catch (err) {
-      console.error('[Director] Failed to parse Claude spec response:', err.message);
     }
 
-    console.log(`[Director] Project name: ${resolvedName}`);
-    return this._assembleSpec(resolvedName, desiredOutcome, brief);
+    console.error('[Director] Spec generation failed after max attempts, using fallback.');
+    return this._fallbackSpec(projectName || 'new-project', brief);
   }
 
   async _buildSpecWithOllama(brief, projectName = null) {
-    let resolvedName = projectName;
+    const MAX_ATTEMPTS = 3;
+    let lastErrors = [];
+    const basePrompt = this._buildSpecPrompt(brief, projectName);
 
-    if (!resolvedName) {
-      const nameResponse = await fetch(`${this.ollamaUrl}/api/generate`, {
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const prompt = attempt === 0
+        ? basePrompt
+        : `${basePrompt}\n\nPrevious attempt had these validation errors: ${lastErrors.join('; ')}. Fix them and return valid JSON.`;
+
+      const response = await fetch(`${this.ollamaUrl}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: this.model,
-          prompt: `Given this project brief: "${brief}"\n\nRespond with ONLY a short kebab-case project name (example: web-calculator). No other text.`,
-          stream: false
-        })
+        body: JSON.stringify({ model: this.model, prompt, stream: false })
       });
-      const nameData = await nameResponse.json();
-      const rawName = nameData.response.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 30);
-      resolvedName = rawName || 'new-project';
+      const data = await response.json();
+      const text = data.response.trim();
+
+      try {
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          const errors = this._validateSpec(parsed);
+          if (!errors.length) {
+            if (projectName) parsed.projectName = projectName;
+            console.log(`[Director] Spec generated for: ${parsed.projectName} (${parsed.projectType})`);
+            return this._wrapSpec(parsed, brief);
+          }
+          lastErrors = errors;
+          console.warn(`[Director] Spec validation failed (attempt ${attempt + 1}):`, errors.join(', '));
+        }
+      } catch (err) {
+        lastErrors = [`JSON parse error: ${err.message}`];
+        console.error('[Director] Failed to parse spec JSON:', err.message);
+      }
     }
 
-    console.log(`[Director] Project name: ${resolvedName}`);
-
-    const goalResponse = await fetch(`${this.ollamaUrl}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.model,
-        prompt: `Given this project brief: "${brief}"\n\nRespond with ONE sentence describing what success looks like. No other text.`,
-        stream: false
-      })
-    });
-    const goalData = await goalResponse.json();
-    const desiredOutcome = goalData.response.trim();
-
-    return this._assembleSpec(resolvedName, desiredOutcome, brief);
+    console.error('[Director] Spec generation failed after max attempts, using fallback.');
+    return this._fallbackSpec(projectName || 'new-project', brief);
   }
 
-  _assembleSpec(projectName, desiredOutcome, brief) {
+  _buildSpecPrompt(brief, projectName = null) {
+    const nameInstruction = projectName ? `Use "${projectName}" as the projectName.` : '';
+    return (
+      `Generate a complete project spec as JSON for this brief: "${brief}"\n\n` +
+      `Required JSON fields:\n` +
+      `- projectName: kebab-case string, max 30 chars${nameInstruction ? ` (${nameInstruction})` : ''}\n` +
+      `- projectType: one of "cli", "web-app", "api-service", "data-pipeline", "docs-site"\n` +
+      `- brief: { problemStatement, desiredOutcome, constraints: { technical: [strings] }, antiGoals: [strings] }\n` +
+      `- architecture: { overview, components: [{ name, description }], techStack: { language, runtime, packages: [strings] } }\n` +
+      `- deliverables: [{ name, type: "code" or "docs", description, acceptanceCriteria: [strings, at least 1] }]\n\n` +
+      `Supported stacks: JavaScript/node (express, jest, etc.), Python/python3 (flask, pytest, pandas, etc.), Go/go (standard library).\n` +
+      `Match the tech stack to the brief — a Python brief gets Python, a Go brief gets Go.\n\n` +
+      `Respond with ONLY valid JSON (no markdown, no backticks, no explanation).`
+    );
+  }
+
+  _validateSpec(spec) {
+    const errors = [];
+    const validTypes = ['cli', 'web-app', 'api-service', 'data-pipeline', 'docs-site'];
+
+    if (!spec.projectName || typeof spec.projectName !== 'string') {
+      errors.push('projectName is required and must be a string');
+    }
+    if (!validTypes.includes(spec.projectType)) {
+      errors.push(`projectType must be one of: ${validTypes.join(', ')}`);
+    }
+    if (!spec.brief?.desiredOutcome) {
+      errors.push('brief.desiredOutcome is required');
+    }
+    if (!spec.architecture?.techStack?.language) {
+      errors.push('architecture.techStack.language is required');
+    }
+    if (!Array.isArray(spec.architecture?.techStack?.packages)) {
+      errors.push('architecture.techStack.packages must be an array');
+    }
+    if (!Array.isArray(spec.deliverables) || spec.deliverables.length === 0) {
+      errors.push('deliverables must be a non-empty array');
+    }
+    for (const d of (spec.deliverables || [])) {
+      if (!d.name) errors.push('each deliverable must have a name');
+      if (!Array.isArray(d.acceptanceCriteria) || d.acceptanceCriteria.length === 0) {
+        errors.push(`deliverable "${d.name || '(unnamed)'}" must have at least one acceptanceCriteria`);
+      }
+    }
+
+    return errors;
+  }
+
+  _wrapSpec(innerSpec, brief) {
+    const sanitized = (innerSpec.projectName || '').toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 30)
+      || 'new-project';
+
+    return {
+      spec: {
+        projectName: sanitized,
+        projectType: innerSpec.projectType,
+        version: '1.0.0',
+        createdAt: new Date().toISOString(),
+        brief: {
+          problemStatement: innerSpec.brief?.problemStatement || brief,
+          desiredOutcome: innerSpec.brief?.desiredOutcome || brief,
+          constraints: innerSpec.brief?.constraints || { technical: [] },
+          antiGoals: innerSpec.brief?.antiGoals || []
+        },
+        architecture: innerSpec.architecture,
+        team: {
+          workers: ['coder'],
+          managers: ['pm', 'techlead'],
+          efficiency: false
+        },
+        deliverables: innerSpec.deliverables,
+        openQuestions: []
+      }
+    };
+  }
+
+  _fallbackSpec(projectName, brief) {
+    console.warn(`[Director] Using fallback Express spec for: ${projectName}`);
     return {
       spec: {
         projectName,
+        projectType: 'web-app',
         version: '1.0.0',
         createdAt: new Date().toISOString(),
         brief: {
           problemStatement: brief,
-          desiredOutcome,
+          desiredOutcome: brief,
           constraints: { technical: ['Node.js only', 'no external databases'] },
-          antiGoals: ['no user authentication', 'no mobile app']
+          antiGoals: []
         },
         architecture: {
           overview: 'Single page web application with Express backend',
@@ -309,37 +399,15 @@ class Director {
             { name: 'frontend', description: 'HTML/CSS/JS user interface' },
             { name: 'backend', description: 'Express.js server' }
           ],
-          techStack: {
-            language: 'javascript',
-            runtime: 'node',
-            packages: ['express']
-          }
+          techStack: { language: 'javascript', runtime: 'node', packages: ['express'] }
         },
-        team: {
-          workers: ['coder'],
-          managers: ['pm', 'techlead'],
-          efficiency: false
-        },
+        team: { workers: ['coder'], managers: ['pm', 'techlead'], efficiency: false },
         deliverables: [
           {
-            name: `${projectName}-frontend`,
+            name: `${projectName}-app`,
             type: 'code',
-            description: `HTML/CSS/JavaScript frontend for ${projectName}`,
-            acceptanceCriteria: [
-              'Page loads without errors',
-              'User interface is functional',
-              'All buttons and inputs work correctly'
-            ]
-          },
-          {
-            name: `${projectName}-backend`,
-            type: 'code',
-            description: `Express.js backend server for ${projectName}`,
-            acceptanceCriteria: [
-              'Server starts without errors',
-              'API endpoints return correct responses',
-              'Error handling is implemented'
-            ]
+            description: `Web application for ${projectName}`,
+            acceptanceCriteria: ['Application loads without errors', 'Core functionality works']
           }
         ],
         openQuestions: []
