@@ -120,7 +120,7 @@ describe('PMAgent.buildEstimate', () => {
     });
   });
 
-  test('cost equals hours * 20', async () => {
+  test('cost equals hours * hourly rate (default 20)', async () => {
     const estimate = await agent.buildEstimate({ projects: [] });
     expect(estimate.cost).toBe(estimate.hours * 20);
   });
@@ -128,6 +128,11 @@ describe('PMAgent.buildEstimate', () => {
   test('confidence is "low" when no relevant history', async () => {
     const estimate = await agent.buildEstimate({ projects: [] });
     expect(estimate.confidence).toBe('low');
+  });
+
+  test('notes indicate cold start when no history', async () => {
+    const estimate = await agent.buildEstimate({ projects: [] });
+    expect(estimate.notes.toLowerCase()).toContain('cold start');
   });
 
   test('confidence is "medium" when relevant history exists', async () => {
@@ -139,6 +144,51 @@ describe('PMAgent.buildEstimate', () => {
     };
     const estimate = await agent.buildEstimate(history);
     expect(estimate.confidence).toBe('medium');
+  });
+
+  test('uses historical mean for hours instead of LLM when data available', async () => {
+    const history = {
+      projects: [
+        { projectType: 'web-app', hours: 10 },
+        { projectType: 'web-app', hours: 20 },
+      ],
+    };
+    const estimate = await agent.buildEstimate(history);
+    expect(estimate.hours).toBe(15); // mean of 10 and 20
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('uses actuals.hours from new-format history entries', async () => {
+    const history = {
+      projects: [
+        { projectType: 'web-app', estimate: { hours: 5 }, actuals: { hours: 12 } },
+        { projectType: 'web-app', estimate: { hours: 8 }, actuals: { hours: 16 } },
+      ],
+    };
+    const estimate = await agent.buildEstimate(history);
+    expect(estimate.hours).toBe(14); // mean of actuals: (12+16)/2
+  });
+
+  test('only matches history entries for the same projectType', async () => {
+    const history = {
+      projects: [
+        { projectType: 'cli', hours: 100 },
+        { projectType: 'web-app', hours: 10 },
+      ],
+    };
+    const estimate = await agent.buildEstimate(history);
+    expect(estimate.hours).toBe(10); // only the web-app entry matches
+  });
+
+  test('falls back to LLM when history has no matching projectType', async () => {
+    const history = {
+      projects: [
+        { projectType: 'cli', hours: 50 },
+      ],
+    };
+    const estimate = await agent.buildEstimate(history);
+    expect(global.fetch).toHaveBeenCalled();
+    expect(estimate.confidence).toBe('low');
   });
 
   test('breakdown has one entry per deliverable', async () => {

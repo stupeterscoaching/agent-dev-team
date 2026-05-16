@@ -139,7 +139,8 @@ class PMAgent {
   }
 
   /**
-   * Builds a cost estimate using the local model and estimation history.
+   * Builds a cost estimate using estimation history when available,
+   * falling back to an LLM estimate on cold start.
    * @param {object} history
    * @returns {object} estimate
    */
@@ -148,19 +149,35 @@ class PMAgent {
       .filter(p => p.projectType === this.spec.projectType)
       .slice(-5);
 
-    const hoursResponse = await fetch(`${this.ollamaUrl}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.model,
-        prompt: `You are a project manager. Given this project: "${this.spec.projectName}" with ${this.spec.deliverables?.length || 1} deliverables, estimate total development hours. Respond with ONLY a single number between 1 and 100. No other text.`,
-        stream: false
-      })
-    });
+    const hourlyRate = parseInt(process.env.HOURLY_RATE || '20');
+    let hours, confidence, notes;
 
-    const hoursData = await hoursResponse.json();
-    const hours = parseInt(hoursData.response.trim().match(/\d+/)?.[0] || '8');
-    const cost = hours * 20;
+    if (relevantHistory.length > 0) {
+      const historicalHours = relevantHistory
+        .map(p => p.actuals?.hours || p.estimate?.hours || p.hours)
+        .filter(h => typeof h === 'number' && h > 0);
+      hours = historicalHours.length > 0
+        ? Math.round(historicalHours.reduce((sum, h) => sum + h, 0) / historicalHours.length)
+        : 8;
+      confidence = 'medium';
+      notes = `Based on ${relevantHistory.length} past ${this.spec.projectType} project${relevantHistory.length > 1 ? 's' : ''}`;
+    } else {
+      const hoursResponse = await fetch(`${this.ollamaUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: this.model,
+          prompt: `You are a project manager. Given this project: "${this.spec.projectName}" (type: ${this.spec.projectType || 'unknown'}) with ${this.spec.deliverables?.length || 1} deliverables, estimate total development hours. Respond with ONLY a single number between 1 and 100. No other text.`,
+          stream: false
+        })
+      });
+      const hoursData = await hoursResponse.json();
+      hours = parseInt(hoursData.response.trim().match(/\d+/)?.[0] || '8');
+      confidence = 'low';
+      notes = `Cold start — no historical data for ${this.spec.projectType || 'this project type'}. LLM estimate only.`;
+    }
+
+    const cost = hours * hourlyRate;
 
     return {
       hours,
@@ -171,8 +188,8 @@ class PMAgent {
         hours: Math.ceil(hours / (this.spec.deliverables.length || 1)),
         cost: Math.ceil(cost / (this.spec.deliverables.length || 1))
       })) || [],
-      confidence: relevantHistory.length > 0 ? 'medium' : 'low',
-      notes: relevantHistory.length > 0 ? `Based on ${relevantHistory.length} similar projects` : 'No historical data available'
+      confidence,
+      notes
     };
   }
 

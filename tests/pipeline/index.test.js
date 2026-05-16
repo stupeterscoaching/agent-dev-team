@@ -297,6 +297,21 @@ describe('Pipeline.closeProject', () => {
     });
   });
 
+  test('writes projectType from spec into bessemer-state entry', async () => {
+    pipeline.activeProjects['test-project'].spec = { projectType: 'api-service' };
+    await pipeline.closeProject('test-project');
+    const call = mockOctokit.repos.createOrUpdateFileContents.mock.calls[0][0];
+    const written = JSON.parse(Buffer.from(call.content, 'base64').toString('utf8'));
+    expect(written.projects[1].projectType).toBe('api-service');
+  });
+
+  test('writes null projectType when spec is missing', async () => {
+    await pipeline.closeProject('test-project');
+    const call = mockOctokit.repos.createOrUpdateFileContents.mock.calls[0][0];
+    const written = JSON.parse(Buffer.from(call.content, 'base64').toString('utf8'));
+    expect(written.projects[1].projectType).toBeNull();
+  });
+
   test('preserves existing bessemer-state entries (append-only)', async () => {
     await pipeline.closeProject('test-project');
     const call = mockOctokit.repos.createOrUpdateFileContents.mock.calls[0][0];
