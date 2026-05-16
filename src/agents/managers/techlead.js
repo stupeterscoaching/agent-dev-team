@@ -77,16 +77,15 @@ class TechLeadAgent {
       await this.postToManagers(`⚠️ Tests not run: ${testResult.output}`);
     }
 
-    const score = await this.scorePR(pr.data, filesChanged, testResult);
+    // Qualitative review — advisory only, does not affect merge decision
+    const review = await this.getQualitativeReview(pr.data, filesChanged, testResult);
 
-    // Tests failed → always reject, regardless of score
-    const approved = testResult.passed !== false && score.score >= 3;
+    // Gate: tests failed → reject. Tests passed or not run → approve.
+    const approved = testResult.passed !== false;
 
     const reviewBody = approved
-      ? `✅ Tech Lead review complete.\n\n**Score: ${score.score}/10**\n\n${score.feedback}`
-      : testResult.passed === false
-        ? `❌ Tech Lead review — tests failed.\n\n**Score: ${score.score}/10**\n\n${score.feedback}\n\n**Test output:**\n\`\`\`\n${testResult.output.slice(0, 800)}\n\`\`\``
-        : `❌ Tech Lead review — changes needed.\n\n**Score: ${score.score}/10**\n\n${score.feedback}`;
+      ? `✅ Tests passed — merging.\n\n**Code review notes:**\n${review.commentary}`
+      : `❌ Tests failed — changes required.\n\n**Test output:**\n\`\`\`\n${testResult.output.slice(0, 800)}\n\`\`\`\n\n**Code review notes:**\n${review.commentary}`;
 
     if (approved) {
       if (this.hasSeparateGitHubAccount) {
@@ -103,13 +102,13 @@ class TechLeadAgent {
         console.log(`[TechLead] Closed Issue #${issueMatch[1]}`);
       }
 
-      console.log(`[TechLead] ✅ PR #${prNumber} merged in ${owner}/${repo}. Score: ${score.score}/10`);
-      await this.postToManagers(`✅ PR #${prNumber} merged. Score: ${score.score}/10\n${score.feedback}`);
+      console.log(`[TechLead] ✅ PR #${prNumber} merged in ${owner}/${repo}`);
+      await this.postToManagers(`✅ PR #${prNumber} merged.\n${review.commentary}`);
 
       await new Promise(resolve => setTimeout(resolve, 8000));
       await this.checkProjectComplete(owner, repo, prNumber);
 
-      return { approved: true, score, testResult };
+      return { approved: true, testResult, review };
     } else {
       if (this.hasSeparateGitHubAccount) {
         await this.octokit.pulls.createReview({ owner, repo, pull_number: prNumber, event: 'REQUEST_CHANGES', body: reviewBody });
@@ -117,8 +116,8 @@ class TechLeadAgent {
         await this.octokit.issues.createComment({ owner, repo, issue_number: prNumber, body: reviewBody });
       }
 
-      await this.postToManagers(`❌ PR #${prNumber} rejected. Score: ${score.score}/10\n${score.feedback}`);
-      return { approved: false, score, testResult };
+      await this.postToManagers(`❌ PR #${prNumber} rejected — tests failed.\n${review.commentary}`);
+      return { approved: false, testResult, review };
     }
   }
 
@@ -175,12 +174,17 @@ class TechLeadAgent {
     return { passed: test.exitCode === 0, output };
   }
 
-  async scorePR(pr, files, testResult = null) {
+  /**
+   * Asks the model for qualitative code review commentary.
+   * Advisory only — does not affect the merge decision.
+   * @returns {{ commentary: string, suggestions: string[] }}
+   */
+  async getQualitativeReview(pr, files, testResult = null) {
     const testContext = testResult
       ? `\nTest results: ${testResult.passed === true ? 'PASSED' : testResult.passed === false ? 'FAILED' : 'NOT RUN'}\n${testResult.output.slice(0, 400)}`
       : '';
 
-    const prompt = `You are a Tech Lead reviewing a pull request.
+    const prompt = `You are a Tech Lead reviewing a pull request. Tests determine whether the PR merges — your role is qualitative commentary only.
 
 Coding standards:
 ${JSON.stringify(this.standards?.rules || [], null, 2)}
@@ -191,14 +195,10 @@ ${testContext}
 Files changed:
 ${JSON.stringify(files, null, 2)}
 
-Score this PR from 1-10 based on:
-- Does it meet the acceptance criteria?
-- Does it follow coding standards?
-- Is the code clear and well-commented?
-- Are errors handled?
+Provide brief advisory commentary on: naming clarity, error handling, code organisation, missed edge cases, and style. Do NOT give a numeric score. Do NOT recommend merging or rejecting — that is determined by tests.
 
 Return ONLY valid JSON with no other text:
-{"score":5,"feedback":"your feedback here","issues":[]}`;
+{"commentary":"your observations here","suggestions":["suggestion 1","suggestion 2"]}`;
 
     const response = await fetch(`${this.ollamaUrl}/api/generate`, {
       method: 'POST',
@@ -214,8 +214,8 @@ Return ONLY valid JSON with no other text:
       if (!jsonMatch) throw new Error('No JSON found');
       return JSON.parse(jsonMatch[0]);
     } catch (err) {
-      console.error('[TechLead] Failed to parse score JSON:', err.message);
-      return { score: 5, feedback: 'Score parsing failed — review manually', issues: [] };
+      console.error('[TechLead] Failed to parse review JSON:', err.message);
+      return { commentary: 'Review parsing failed — see diff for details', suggestions: [] };
     }
   }
 
