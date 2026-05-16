@@ -152,7 +152,9 @@ class PMAgent {
     const hourlyRate = parseInt(process.env.HOURLY_RATE || '20');
     let hours, confidence, notes;
 
-    if (relevantHistory.length > 0) {
+    const MIN_SAMPLE = 3;
+
+    if (relevantHistory.length >= MIN_SAMPLE) {
       const historicalHours = relevantHistory
         .map(p => p.actuals?.hours || p.estimate?.hours || p.hours)
         .filter(h => typeof h === 'number' && h > 0);
@@ -160,7 +162,7 @@ class PMAgent {
         ? Math.round(historicalHours.reduce((sum, h) => sum + h, 0) / historicalHours.length)
         : 8;
       confidence = 'medium';
-      notes = `Based on ${relevantHistory.length} past ${this.spec.projectType} project${relevantHistory.length > 1 ? 's' : ''}`;
+      notes = `Based on mean of ${relevantHistory.length} past ${this.spec.projectType} projects`;
     } else {
       const hoursResponse = await fetch(`${this.ollamaUrl}/api/generate`, {
         method: 'POST',
@@ -174,7 +176,9 @@ class PMAgent {
       const hoursData = await hoursResponse.json();
       hours = parseInt(hoursData.response.trim().match(/\d+/)?.[0] || '8');
       confidence = 'low';
-      notes = `Cold start — no historical data for ${this.spec.projectType || 'this project type'}. LLM estimate only.`;
+      notes = relevantHistory.length > 0
+        ? `Insufficient history (${relevantHistory.length}/${MIN_SAMPLE} required) for ${this.spec.projectType}. LLM estimate only.`
+        : `Cold start — no historical data for ${this.spec.projectType || 'this project type'}. LLM estimate only.`;
     }
 
     const cost = hours * hourlyRate;
