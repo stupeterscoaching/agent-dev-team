@@ -1,15 +1,74 @@
 const { createWebhookClient, postAsWorker } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');
+const Sandbox = require('../../sandbox');
 
-/**
- * Coder Agent — ephemeral, spawned per GitHub Issue.
- * Responsible for:
- * - Reading the Issue brief
- * - Creating a branch in the project repo
- * - Writing code using the local model
- * - Opening a PR in the project repo
- * - Discarding itself when done
- */
+const TOOLS = [
+  {
+    name: 'read_file',
+    description: 'Read the contents of a file in the project repository.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path relative to repo root' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'write_file',
+    description: 'Write content to a file in the project repository. Creates parent directories as needed.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        content: { type: 'string' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+  {
+    name: 'list_dir',
+    description: 'List files and directories at a path in the project repository.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Directory path relative to repo root' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'exec',
+    description: 'Run a shell command in the project directory. Returns stdout, stderr, and exitCode.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string' },
+      },
+      required: ['command'],
+    },
+  },
+  {
+    name: 'done',
+    description: 'Signal that all required files have been written and the task is complete.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string', description: 'Short description of what was built' },
+      },
+      required: ['summary'],
+    },
+  },
+];
+
+const SYSTEM_PROMPT = `You are a Coder agent. You implement GitHub Issues by reading the project repository, writing code, and running commands to verify your work.
+
+Use tools to explore the repo, write files, install dependencies, and run tests. When the task is complete and tests pass, call done().
+
+Rules:
+- Always read existing files before overwriting them
+- Run tests after writing code (if a test script exists)
+- Only call done() when the task is fully implemented and verified`;
 
 class CoderAgent {
   constructor(issue, projectChannels, projectRepo) {
@@ -20,173 +79,182 @@ class CoderAgent {
     this.repo = projectRepo?.repo || process.env.GITHUB_REPO;
     this.ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
     this.model = process.env.WORKER_MODEL || 'llama3.2:latest';
+    this.anthropicKey = process.env.ANTHROPIC_API_KEY;
     this.agentName = `Coder-task-${issue.number}`;
     this.branchName = `coder/${issue.number}/${this.slugify(issue.title)}`;
-    this.maxAttempts = 3;
+    this.maxIterations = parseInt(process.env.CODER_MAX_ITERATIONS) || 10;
     this.webhook = null;
   }
 
-  /**
-   * Main entry point — runs the full coder execution sequence.
-   */
   async run() {
     await this.log(`🚀 Spawned for Issue #${this.issue.number}: ${this.issue.title}`);
 
+    const sandbox = new Sandbox({
+      repoUrl: `https://github.com/${this.owner}/${this.repo}.git`,
+      branch: 'main',
+      token: process.env.GITHUB_TOKEN,
+    });
+
     try {
-      await this.createBranch();
-      const code = await this.generateCode();
-      await this.commitCode(code);
+      await sandbox.boot();
+      await this.log(`📦 Sandbox ready`);
+
+      const checkout = await sandbox.exec(`git checkout -b ${this.branchName}`);
+      if (checkout.exitCode !== 0) throw new Error(`Branch creation failed: ${checkout.stderr}`);
+
+      await this.agenticLoop(sandbox);
+      await this.commitAndPush(sandbox);
       await this.openPR();
       await this.log(`✅ PR opened for Issue #${this.issue.number}. Discarding.`);
     } catch (err) {
       await this.log(`❌ Fatal error on Issue #${this.issue.number}: ${err.message}`);
       await this.escalate(err.message);
+    } finally {
+      await sandbox.teardown();
     }
   }
 
-  /**
-   * Creates a branch for this Issue in the project repo.
-   */
-  async createBranch() {
-    const { data: ref } = await this.octokit.git.getRef({
-      owner: this.owner,
-      repo: this.repo,
-      ref: 'heads/main'
-    });
+  async agenticLoop(sandbox) {
+    const useClaude = !!this.anthropicKey;
+    const listing = await sandbox.listDir('.');
+    const userPrompt = `Task: ${this.issue.title}\n\n${this.issue.body}\n\nRepo root contains: ${listing.join(', ')}`;
 
-    try {
-  await this.octokit.git.createRef({
-    owner: this.owner,
-    repo: this.repo,
-    ref: `refs/heads/${this.branchName}`,
-    sha: ref.object.sha
-  });
-} catch (err) {
-  if (err.status === 422) {
-    // Branch already exists — delete and recreate
-    await this.octokit.git.deleteRef({
-      owner: this.owner,
-      repo: this.repo,
-      ref: `heads/${this.branchName}`
-    });
-    await this.octokit.git.createRef({
-      owner: this.owner,
-      repo: this.repo,
-      ref: `refs/heads/${this.branchName}`,
-      sha: ref.object.sha
-    });
-  } else {
-    throw err;
+    const messages = [{ role: 'user', content: userPrompt }];
+
+    for (let i = 0; i < this.maxIterations; i++) {
+      const response = await this.callModel(messages, useClaude);
+
+      if (response.tool === 'done') {
+        await this.log(`✅ Agent done: ${response.args.summary}`);
+        return;
+      }
+
+      await this.log(`🔧 ${response.tool}(${JSON.stringify(response.args)})`);
+
+      let toolResult;
+      try {
+        toolResult = await this.executeTool(response.tool, response.args, sandbox);
+      } catch (err) {
+        toolResult = `Error: ${err.message}`;
+      }
+
+      const resultStr = typeof toolResult === 'object' ? JSON.stringify(toolResult) : String(toolResult ?? '');
+
+      if (useClaude) {
+        messages.push({ role: 'assistant', content: response.raw });
+        messages.push({
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: response.id, content: resultStr }],
+        });
+      } else {
+        messages.push({ role: 'assistant', content: response.raw });
+        messages.push({ role: 'user', content: `Tool result:\n${resultStr}` });
+      }
+    }
+
+    await this.log(`⚠️ Max iterations reached — committing what was written`);
   }
-}
 
-    await this.log(`🌿 Branch created: ${this.branchName}`);
+  async callModel(messages, useClaude) {
+    if (useClaude) return this.callClaude(messages);
+    return this.callOllama(messages);
   }
 
-  /**
-   * Generates code for the Issue using the local model.
-   * Falls back to a placeholder if the model returns malformed JSON.
-   * @returns {Array} array of { filename, content } objects
-   */
-  async generateCode() {
-    await this.log(`🤔 Generating code...`);
+  async callClaude(messages) {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.anthropicKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'prompt-caching-2024-07-31',
+      },
+      body: JSON.stringify({
+        model: this.model,
+        max_tokens: 4096,
+        system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+        tools: TOOLS,
+        messages,
+      }),
+    });
 
-    const prompt = `You are a Coder agent. Write code for this task.
+    const data = await response.json();
 
-${this.issue.body}
+    if (!response.ok) throw new Error(`Claude API error ${response.status}: ${data.error?.message}`);
 
-Return ONLY a JSON object. No markdown, no backticks, no explanation.
-Use this exact format:
-{"files":[{"filename":"index.js","content":"// code here"}],"summary":"what you built"}
+    const toolUse = data.content?.find(b => b.type === 'tool_use');
+    if (toolUse) {
+      return { tool: toolUse.name, args: toolUse.input, id: toolUse.id, raw: data.content };
+    }
 
-Use unique descriptive filenames based on the task. For example: calculator-backend.js, calculator-frontend.html, calculator-styles.css.
-Keep filenames simple, no paths, no leading dots or slashes.`;
+    const text = data.content?.find(b => b.type === 'text')?.text || 'Task complete';
+    return { tool: 'done', args: { summary: text }, id: null, raw: data.content };
+  }
+
+  async callOllama(messages) {
+    const history = messages
+      .map(m => `${m.role}: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`)
+      .join('\n\n');
+
+    const prompt = `${SYSTEM_PROMPT}
+
+Available tools (respond with JSON only — no markdown):
+${TOOLS.map(t => `- ${t.name}: ${t.description}`).join('\n')}
+
+Format: {"tool":"<name>","args":{<params>}}
+
+${history}
+
+assistant:`;
 
     const response = await fetch(`${this.ollamaUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.model,
-        prompt,
-        stream: false,
-        options: { temperature: 0.1 }
-      })
+      body: JSON.stringify({ model: this.model, prompt, stream: false, options: { temperature: 0.1 } }),
     });
 
     const data = await response.json();
-    const text = data.response.trim();
+    const text = (data.response || '').trim();
 
     try {
       const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON found');
+      if (!jsonMatch) throw new Error('No JSON');
       const parsed = JSON.parse(jsonMatch[0]);
-      await this.log(`📝 Generated ${parsed.files.length} file(s): ${parsed.summary}`);
-      return parsed.files;
-    } catch (err) {
-      await this.log(`⚠️ JSON parse failed, using fallback template`);
-      return [
-        {
-          filename: `${this.slugify(this.issue.title)}.js`,
-          content: `// Auto-generated placeholder for: ${this.issue.title}\n// TODO: implement\nconsole.log('${this.issue.title}');`
-        }
-      ];
+      if (!parsed.tool) throw new Error('No tool field');
+      return { tool: parsed.tool, args: parsed.args || {}, id: null, raw: text };
+    } catch {
+      return { tool: 'done', args: { summary: text || 'Task complete' }, id: null, raw: text };
     }
   }
 
-  /**
-   * Commits generated code to the branch.
-   * @param {Array} files
-   */
-  async commitCode(files) {
-    for (const file of files) {
-      // Sanitize filename
-      file.filename = file.filename.replace(/^\.\//, '');
-
-      let attempt = 0;
-      let committed = false;
-
-      while (attempt < this.maxAttempts && !committed) {
-        attempt++;
-        try {
-          let currentSha = null;
-          try {
-            const { data: existing } = await this.octokit.repos.getContent({
-              owner: this.owner,
-              repo: this.repo,
-              path: file.filename,
-              ref: this.branchName
-            });
-            currentSha = existing.sha;
-          } catch (e) {
-            // File doesn't exist yet — that's fine
-          }
-
-          await this.octokit.repos.createOrUpdateFileContents({
-            owner: this.owner,
-            repo: this.repo,
-            path: file.filename,
-            message: `[coder-${this.issue.number}] add ${file.filename}`,
-            content: Buffer.from(file.content).toString('base64'),
-            branch: this.branchName,
-            sha: currentSha || undefined
-          });
-
-          await this.log(`💾 Committed: ${file.filename} (attempt ${attempt})`);
-          committed = true;
-
-        } catch (err) {
-          await this.log(`⚠️ Commit failed for ${file.filename} (attempt ${attempt}): ${err.message}`);
-          if (attempt === this.maxAttempts) {
-            throw new Error(`edit-mismatch: failed to commit ${file.filename} after ${this.maxAttempts} attempts`, { cause: err });
-          }
-        }
-      }
+  async executeTool(name, args, sandbox) {
+    switch (name) {
+      case 'read_file': return sandbox.readFile(args.path);
+      case 'write_file': await sandbox.writeFile(args.path, args.content); return 'written';
+      case 'list_dir': return sandbox.listDir(args.path);
+      case 'exec': return sandbox.exec(args.command);
+      default: return `Unknown tool: ${name}`;
     }
   }
 
-  /**
-   * Opens a PR for the branch in the project repo.
-   */
+  async commitAndPush(sandbox) {
+    const status = await sandbox.exec('git status --porcelain');
+    if (!status.stdout.trim()) {
+      throw new Error('No files were written — nothing to commit');
+    }
+
+    await sandbox.exec('git add -A');
+    const commit = await sandbox.exec(
+      `git -c user.name="Coder Agent" -c user.email="coder@adt.local" commit -m "[coder-${this.issue.number}] ${this.issue.title}"`
+    );
+    if (commit.exitCode !== 0) throw new Error(`Commit failed: ${commit.stderr}`);
+
+    const push = await sandbox.exec(`git push origin ${this.branchName}`);
+    if (push.exitCode !== 0) throw new Error(`Push failed: ${push.stderr}`);
+
+    await this.log(`🚢 Branch pushed: ${this.branchName}`);
+  }
+
   async openPR() {
     const { data: pr } = await this.octokit.pulls.create({
       owner: this.owner,
@@ -194,74 +262,57 @@ Keep filenames simple, no paths, no leading dots or slashes.`;
       title: `[coder-${this.issue.number}] ${this.issue.title}`,
       head: this.branchName,
       base: 'main',
-      body: `Closes #${this.issue.number}\n\nOpened by ${this.agentName}.`
+      body: `Closes #${this.issue.number}\n\nOpened by ${this.agentName}.`,
     });
 
     await this.octokit.issues.update({
       owner: this.owner,
       repo: this.repo,
       issue_number: this.issue.number,
-      labels: ['status:review']
+      labels: ['status:review'],
     });
 
     await this.log(`🔀 PR #${pr.number} opened: ${pr.html_url}`);
   }
 
-  /**
-   * Escalates a failure — updates Issue label to blocked.
-   * @param {string} reason
-   */
   async escalate(reason) {
-  await this.log(`🚨 Escalating: ${reason}`);
+    await this.log(`🚨 Escalating: ${reason}`);
 
-  // Post to #alerts
-  try {
-    const { postToChannel, createBotClient } = require('../../discord/client');
-    const alertClient = createBotClient(process.env.DIRECTOR_TOKEN);
-    alertClient.once('clientReady', async () => {
-      await postToChannel(
-        alertClient,
-        process.env.DISCORD_CHANNEL_ALERTS,
-        `🚨 **Worker Escalation**\n**Agent:** ${this.agentName}\n**Issue:** #${this.issue.number} — ${this.issue.title}\n**Reason:** ${reason}`
-      );
-      alertClient.destroy();
-    });
-  } catch (err) {
-    console.error(`[${this.agentName}] Failed to post alert: ${err.message}`);
+    try {
+      const { postToChannel, createBotClient } = require('../../discord/client');
+      const alertClient = createBotClient(process.env.DIRECTOR_TOKEN);
+      alertClient.once('clientReady', async () => {
+        await postToChannel(
+          alertClient,
+          process.env.DISCORD_CHANNEL_ALERTS,
+          `🚨 **Worker Escalation**\n**Agent:** ${this.agentName}\n**Issue:** #${this.issue.number} — ${this.issue.title}\n**Reason:** ${reason}`
+        );
+        alertClient.destroy();
+      });
+    } catch (err) {
+      console.error(`[${this.agentName}] Failed to post alert: ${err.message}`);
+    }
+
+    try {
+      await this.octokit.issues.update({
+        owner: this.owner,
+        repo: this.repo,
+        issue_number: this.issue.number,
+        labels: ['status:blocked'],
+      });
+    } catch (err) {
+      await this.log(`⚠️ Could not update Issue label: ${err.message}`);
+    }
   }
 
-  // Update Issue label to blocked
-  try {
-    await this.octokit.issues.update({
-      owner: this.owner,
-      repo: this.repo,
-      issue_number: this.issue.number,
-      labels: ['status:blocked']
-    });
-  } catch (err) {
-    await this.log(`⚠️ Could not update Issue label: ${err.message}`);
-  }
-}
-
-  /**
-   * Posts a message to the workers channel via webhook.
-   * @param {string} content
-   */
   async log(content) {
     console.log(`[${this.agentName}] ${content}`);
     if (this.projectChannels?.workersWebhook) {
-      if (!this.webhook) {
-        this.webhook = createWebhookClient(this.projectChannels.workersWebhook);
-      }
+      if (!this.webhook) this.webhook = createWebhookClient(this.projectChannels.workersWebhook);
       await postAsWorker(this.webhook, content, this.agentName);
     }
   }
 
-  /**
-   * Converts a string to a URL-safe slug.
-   * @param {string} str
-   * @returns {string}
-   */
   slugify(str) {
     return str
       .toLowerCase()
