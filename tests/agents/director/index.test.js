@@ -313,21 +313,44 @@ describe('Director._formatDraftSpec', () => {
   });
 });
 
-describe('Director.buildSpec', () => {
+const VALID_SPEC = {
+  projectName: 'web-calculator',
+  projectType: 'web-app',
+  brief: {
+    problemStatement: 'Build a web calculator',
+    desiredOutcome: 'A working calculator app',
+    constraints: { technical: ['Node.js only'] },
+    antiGoals: ['no auth']
+  },
+  architecture: {
+    overview: 'Single page app',
+    components: [{ name: 'frontend', description: 'UI' }],
+    techStack: { language: 'javascript', runtime: 'node', packages: ['express'] }
+  },
+  deliverables: [{
+    name: 'web-calculator-app',
+    type: 'code',
+    description: 'Calculator app',
+    acceptanceCriteria: ['Loads without errors']
+  }]
+};
+
+describe('Director.buildSpec (Ollama)', () => {
   let director;
 
   beforeEach(() => {
     director = new Director();
   });
 
-  test('returns spec with correct top-level shape', async () => {
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce({ json: jest.fn().mockResolvedValue({ response: 'web-calculator' }) })
-      .mockResolvedValueOnce({ json: jest.fn().mockResolvedValue({ response: 'A working calculator' }) });
+  test('returns spec with correct top-level shape including projectType', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ response: JSON.stringify(VALID_SPEC) })
+    });
 
     const result = await director.buildSpec('Build a web calculator');
     expect(result.spec).toMatchObject({
       projectName: expect.any(String),
+      projectType: 'web-app',
       version: '1.0.0',
       brief: expect.objectContaining({ problemStatement: 'Build a web calculator' }),
       architecture: expect.objectContaining({ techStack: expect.any(Object) }),
@@ -335,40 +358,127 @@ describe('Director.buildSpec', () => {
     });
   });
 
-  test('sanitizes project name to lowercase kebab-case', async () => {
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce({ json: jest.fn().mockResolvedValue({ response: 'Web Calculator App!!!' }) })
-      .mockResolvedValueOnce({ json: jest.fn().mockResolvedValue({ response: 'A calculator' }) });
+  test('sanitizes projectName from spec response to kebab-case', async () => {
+    const spec = { ...VALID_SPEC, projectName: 'My Web App!!!' };
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ response: JSON.stringify(spec) })
+    });
 
-    const result = await director.buildSpec('Build a web calculator');
+    const result = await director.buildSpec('Build a web app');
     expect(result.spec.projectName).toMatch(/^[a-z0-9-]+$/);
   });
 
-  test('falls back to "new-project" when model returns empty name', async () => {
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce({ json: jest.fn().mockResolvedValue({ response: '' }) })
-      .mockResolvedValueOnce({ json: jest.fn().mockResolvedValue({ response: 'outcome' }) });
-
-    const result = await director.buildSpec('Build something');
-    expect(result.spec.projectName).toBe('new-project');
-  });
-
-  test('project name is at most 30 characters', async () => {
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce({ json: jest.fn().mockResolvedValue({ response: 'a'.repeat(50) }) })
-      .mockResolvedValueOnce({ json: jest.fn().mockResolvedValue({ response: 'outcome' }) });
+  test('projectName is at most 30 characters', async () => {
+    const spec = { ...VALID_SPEC, projectName: 'a'.repeat(50) };
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ response: JSON.stringify(spec) })
+    });
 
     const result = await director.buildSpec('Build something');
     expect(result.spec.projectName.length).toBeLessThanOrEqual(30);
   });
 
-  test('uses provided projectName and skips name inference call', async () => {
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce({ json: jest.fn().mockResolvedValue({ response: 'A working calculator' }) });
+  test('uses provided projectName over LLM response', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ response: JSON.stringify(VALID_SPEC) })
+    });
 
     const result = await director.buildSpec('Build a web calculator', 'exec-chosen-name');
     expect(result.spec.projectName).toBe('exec-chosen-name');
-    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('falls back to default spec after max retries on invalid response', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ response: 'not valid json' })
+    });
+
+    const result = await director.buildSpec('Build something');
+    expect(result.spec.projectName).toBe('new-project');
+    expect(result.spec.deliverables.length).toBeGreaterThan(0);
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  test('retries when spec fails validation and succeeds on second attempt', async () => {
+    const invalidSpec = { projectName: 'test' };
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce({ json: jest.fn().mockResolvedValue({ response: JSON.stringify(invalidSpec) }) })
+      .mockResolvedValue({ json: jest.fn().mockResolvedValue({ response: JSON.stringify(VALID_SPEC) }) });
+
+    const result = await director.buildSpec('Build a web calculator');
+    expect(result.spec.projectType).toBe('web-app');
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('Python brief produces Python techStack', async () => {
+    const pythonSpec = {
+      ...VALID_SPEC,
+      projectName: 'csv-converter',
+      projectType: 'cli',
+      architecture: {
+        ...VALID_SPEC.architecture,
+        techStack: { language: 'python', runtime: 'python3', packages: ['pytest'] }
+      }
+    };
+    global.fetch = jest.fn().mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ response: JSON.stringify(pythonSpec) })
+    });
+
+    const result = await director.buildSpec('Build a Python CSV to JSON converter');
+    expect(result.spec.architecture.techStack.language).toBe('python');
+    expect(result.spec.projectType).toBe('cli');
+  });
+});
+
+describe('Director._validateSpec', () => {
+  let director;
+
+  beforeEach(() => {
+    director = new Director();
+  });
+
+  test('returns empty array for valid spec', () => {
+    expect(director._validateSpec(VALID_SPEC)).toEqual([]);
+  });
+
+  test('returns error when projectName is missing', () => {
+    const { projectName, ...spec } = VALID_SPEC;
+    expect(director._validateSpec(spec).length).toBeGreaterThan(0);
+  });
+
+  test('returns error when projectType is invalid', () => {
+    const spec = { ...VALID_SPEC, projectType: 'invalid-type' };
+    expect(director._validateSpec(spec)).toContainEqual(expect.stringContaining('projectType'));
+  });
+
+  test('returns error when deliverables is empty', () => {
+    const spec = { ...VALID_SPEC, deliverables: [] };
+    expect(director._validateSpec(spec)).toContainEqual(expect.stringContaining('deliverables'));
+  });
+
+  test('returns error when deliverable has no acceptanceCriteria', () => {
+    const spec = {
+      ...VALID_SPEC,
+      deliverables: [{ name: 'test', type: 'code', description: 'Test', acceptanceCriteria: [] }]
+    };
+    expect(director._validateSpec(spec)).toContainEqual(expect.stringContaining('acceptanceCriteria'));
+  });
+
+  test('returns error when techStack.language is missing', () => {
+    const spec = {
+      ...VALID_SPEC,
+      architecture: {
+        ...VALID_SPEC.architecture,
+        techStack: { runtime: 'node', packages: [] }
+      }
+    };
+    expect(director._validateSpec(spec)).toContainEqual(expect.stringContaining('language'));
+  });
+
+  test('accepts all valid projectType values', () => {
+    for (const type of ['cli', 'web-app', 'api-service', 'data-pipeline', 'docs-site']) {
+      const spec = { ...VALID_SPEC, projectType: type };
+      expect(director._validateSpec(spec)).toEqual([]);
+    }
   });
 });
 
@@ -396,17 +506,18 @@ describe('Director with Claude API', () => {
 
   test('buildSpec returns correct shape via Claude API', async () => {
     mockAnthropicCreate.mockResolvedValue({
-      content: [{ text: '{"projectName":"test-app","desiredOutcome":"A working test application"}' }],
+      content: [{ text: JSON.stringify(VALID_SPEC) }],
     });
 
     const result = await director.buildSpec('Build a test app');
-    expect(result.spec.projectName).toBe('test-app');
-    expect(result.spec.brief.desiredOutcome).toBe('A working test application');
+    expect(result.spec.projectName).toBe('web-calculator');
+    expect(result.spec.projectType).toBe('web-app');
+    expect(result.spec.brief.desiredOutcome).toBe('A working calculator app');
   });
 
   test('buildSpec caches the system prompt', async () => {
     mockAnthropicCreate.mockResolvedValue({
-      content: [{ text: '{"projectName":"test-app","desiredOutcome":"A test app"}' }],
+      content: [{ text: JSON.stringify(VALID_SPEC) }],
     });
 
     await director.buildSpec('Build a test app');
@@ -416,21 +527,35 @@ describe('Director with Claude API', () => {
   });
 
   test('buildSpec sanitizes project name from Claude response', async () => {
+    const spec = { ...VALID_SPEC, projectName: 'My App Name!!!' };
     mockAnthropicCreate.mockResolvedValue({
-      content: [{ text: '{"projectName":"My App Name!!!","desiredOutcome":"A great app"}' }],
+      content: [{ text: JSON.stringify(spec) }],
     });
 
     const result = await director.buildSpec('Build an app');
     expect(result.spec.projectName).toMatch(/^[a-z0-9-]+$/);
   });
 
-  test('buildSpec falls back to new-project when Claude returns invalid JSON', async () => {
+  test('buildSpec falls back to new-project when Claude returns invalid JSON after retries', async () => {
     mockAnthropicCreate.mockResolvedValue({
       content: [{ text: 'Sure! Here is a great project for you.' }],
     });
 
     const result = await director.buildSpec('Build something');
     expect(result.spec.projectName).toBe('new-project');
+    expect(mockAnthropicCreate).toHaveBeenCalledTimes(3);
+  });
+
+  test('buildSpec retries with validation error in prompt on second attempt', async () => {
+    const invalidSpec = { projectName: 'test-app' };
+    mockAnthropicCreate
+      .mockResolvedValueOnce({ content: [{ text: JSON.stringify(invalidSpec) }] })
+      .mockResolvedValue({ content: [{ text: JSON.stringify(VALID_SPEC) }] });
+
+    const result = await director.buildSpec('Build a test app');
+    expect(result.spec.projectType).toBe('web-app');
+    expect(mockAnthropicCreate).toHaveBeenCalledTimes(2);
+    expect(mockAnthropicCreate.mock.calls[1][0].messages[0].content).toContain('validation errors');
   });
 
   test('think uses Claude API and returns response text', async () => {
@@ -455,7 +580,7 @@ describe('Director with Claude API', () => {
 
   test('buildSpec uses provided projectName over Claude response name', async () => {
     mockAnthropicCreate.mockResolvedValue({
-      content: [{ text: '{"projectName":"claude-chosen-name","desiredOutcome":"A great app"}' }],
+      content: [{ text: JSON.stringify(VALID_SPEC) }],
     });
 
     const result = await director.buildSpec('Build an app', 'exec-chosen-name');
