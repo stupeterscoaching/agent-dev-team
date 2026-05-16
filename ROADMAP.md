@@ -20,32 +20,29 @@ Each project gets its own GitHub repo (created by PM). Estimation history is wri
 - Writer worker for `type:docs` Issues (#91) — generates docs/READMEs through the same branch/PR flow as Coder
 - Optional separate GitHub account for Tech Lead (#89) — unlocks formal `APPROVE` / `REQUEST_CHANGES` reviews
 
+### v1.2.1 — Hygiene
+- CI: run tests on every PR via GitHub Actions
+- Consolidated `.env` parsing into a single module (`src/config.js`)
+- Removed dead message-contract code
+- Deleted legacy root directories (`managers/`, `workers/`, `orchestrator/`, `pipeline/`)
+- Synced `README.md` and `ARCHITECTURE.md` with v1.2 reality
+
+### v1.3.0 — Agents that actually act
+- Docker sandbox per Coder, with the project repo checked out into the container
+- Tool-using agentic Coder loop (Read / Edit / Write / Bash) iterating until tests pass
+- Tech Lead pulls the PR branch, runs the project's tests in a sandbox, and merges only on green
+- Replaced `score >= 3` numeric merge gate with real verification signals (tests, build, lint)
+
+### v1.4.0 — A Director that actually directs
+- Multi-turn spec refinement — Director posts a draft to `#director`, executive refines in plain language, `confirm` sends to `#approvals` (#113)
+- Tech-stack-aware spec generation — LLM generates the full spec (projectType, architecture, techStack, deliverables); Python/Go briefs produce Python/Go specs; validated against `src/contracts/spec.schema.json` with retry (#114)
+- Real estimation — PM uses historical mean from bessemer-state when ≥ 3 past projects match `projectType`; cold-start LLM fallback with honest confidence flags; `projectType` written to history on close (#115)
+
 ---
 
 ## v1.x — Making it real software
 
 The v1.x line is about closing the gap between **what the docs claim** and **what the code does**. After v1.5 the system should be something a working developer can use without caveats.
-
-### v1.2.1 — Hygiene
-Pre-architectural cleanup. Small, orthogonal items that should be done before the big rewrites.
-- CI: run tests on every PR via GitHub Actions
-- Consolidate the six copies of `.env` parsing into one module
-- Decide on the dead message-contract code — wire it through or delete it
-- Delete legacy root directories (`managers/`, `workers/`, `orchestrator/`, `pipeline/`)
-- Sync `README.md` and `ARCHITECTURE.md` with what the code actually does as of v1.2
-
-### v1.3.0 — Agents that actually act
-The single largest gap between this project and the rest of the field. Today the Coder is a one-shot text generator: prompt in, JSON out, commit. Modern coding agents work in a loop on real files with real tools. This milestone closes that gap.
-- Docker sandbox per Coder, with the project repo checked out into the container
-- Tool-using agentic Coder loop (Read / Edit / Write / Bash) iterating until tests pass
-- Tech Lead pulls the PR branch, runs the project's tests in a sandbox, and merges only on green
-- Replace `score >= 3` numeric merge gate with real verification signals (tests, build, lint)
-
-### v1.4.0 — A Director that actually directs
-Today `Director._assembleSpec()` returns the same hardcoded Express + Node spec for every brief. The model only extracts a project name and a one-sentence outcome.
-- Multi-turn spec refinement — Director iterates on a spec with the user across multiple Discord messages
-- Tech-stack-aware spec generation — Python, Go, Rust briefs produce Python/Go/Rust specs
-- Real estimation: wire `projectType` through the spec, filter estimation history meaningfully, surface estimate-vs-actual
 
 ### v1.5.0 — Persistence + real concurrency
 Today `activeProjects` is in-memory. A crash loses all in-flight state. `PM_TOKEN` and `TECHLEAD_TOKEN` are global env vars, so the system can only handle one project at a time even though the data model suggests otherwise.
