@@ -107,14 +107,19 @@ There is no in-process message bus. Agents coordinate through three real channel
 Nothing spins up without executive confirmation. Two hard gates before any work starts:
 
 ```
-Gate 1 — Spec confirmation
-  Director builds spec from executive brief
-  Director → #approvals (type 'approve' or 'reject')
+Gate 1 — Spec confirmation (multi-turn)
+  Executive → #director: "brief: {description}"
+  Director generates draft spec (tech-stack-aware, LLM-produced)
+  Director posts draft to #director for review
+  Executive refines in plain language — as many turns as needed
+  Executive types 'confirm' → Director sends spec to #approvals
   approve → Director spins up PM + Tech Lead
+  (type 'cancel' at any point to clear the draft and start over)
 
 Gate 2 — Cost estimate confirmation
   PM reads estimation-history.json from bessemer-state
-  PM builds cost estimate
+  PM builds cost estimate (historical mean if ≥ 3 past projects match
+  projectType, otherwise LLM cold-start estimate)
   PM → #approvals (type 'approve' or 'reject')
   approve → PM creates project repo + Issues, workers spawn
 ```
@@ -151,10 +156,12 @@ No exceptions (for Coder and Writer).
 ## Pipeline Flow
 
 ```
-PHASE 1 — BRIEF
+PHASE 1 — BRIEF (multi-turn)
 Executive → #director: "brief: [project-name] {description}"
-Director builds spec using configured model
-Director → #approvals (type 'approve' or 'reject')
+Director generates draft spec (LLM-produced, tech-stack-aware)
+Director posts draft to #director
+Executive refines with plain-language instructions (repeat as needed)
+Executive types 'confirm' → spec sent to #approvals (type 'approve' or 'reject')
 
 PHASE 2 — TEAM SPINUP
 Director spins up PM + Tech Lead (ephemeral, simultaneously)
@@ -196,6 +203,19 @@ Director → #director: "Project {name} closed"
 
 ---
 
+## Spec Generation
+
+The Director generates a complete spec from the brief in a single LLM call. The model produces:
+
+- `projectName` — kebab-case, max 30 chars
+- `projectType` — one of `cli`, `web-app`, `api-service`, `data-pipeline`, `docs-site`
+- `architecture` — overview, components, `techStack` (language, runtime, packages)
+- `deliverables` — array with `name`, `type`, `description`, `acceptanceCriteria`
+
+The spec is validated against `src/contracts/spec.schema.json`. On failure the error is fed back into the prompt and the call is retried up to 3 times. After exhaustion it falls back to a generic Express spec. The validated spec is stored in `activeBriefs[channelId]` until the executive confirms it.
+
+---
+
 ## Estimation Memory
 
 The PM reads from a shared estimation history in the `bessemer-state` repo on spawn. After a project closes, the pipeline writes the estimate back.
@@ -203,7 +223,18 @@ The PM reads from a shared estimation history in the `bessemer-state` repo on sp
 - Remote: `usebessemer/bessemer-state/estimation-history.json`
 - Local fallback: `projects/estimation-history.json` (used if bessemer-state is unreachable)
 
-Both locations use the same JSON schema: `{ "projects": [ { projectName, closedAt, estimate: { hours, cost, currency } } ] }`.
+Both locations use the same JSON schema:
+```json
+{ "projects": [ { "projectName", "projectType", "closedAt",
+    "estimate": { "hours", "cost", "currency" },
+    "actuals":  { "hours", "cost", "currency" },
+    "variance" } ] }
+```
+
+**Estimation logic:**
+- Filter history by `projectType` (last 5 entries)
+- **≥ 3 matches** → use mean of `actuals.hours` (or `estimate.hours` as proxy); `confidence: medium`
+- **< 3 matches** → LLM cold-start estimate; `confidence: low`; notes say *"Insufficient history (N/3 required)"* or *"Cold start"* when zero matches exist
 
 ---
 
@@ -238,12 +269,10 @@ Workers post via webhook — no bot token, no persistent identity.
 
 ---
 
-## Known Limitations (v1.2)
+## Known Limitations (v1.4)
 
-- **Single-shot workers** — Coder and Writer generate output in one model call with no tool use or iteration. The model cannot read existing repo files, run its own output, or recover from errors in its code. Planned fix: v1.3 agentic Coder with tool use.
-- **No verification before merge** — Tech Lead reads the diff text and asks the model for a quality score. No tests run. No build happens. Planned fix: v1.3 Tech Lead runs project tests in a sandbox before merging.
-- **Hardcoded Node/Express spec** — Director always produces the same architecture regardless of brief content. A Python brief gets an Express app. Planned fix: v1.4 tech-stack-aware spec generation.
-- **Estimation is approximate** — PM asks the model for a number and multiplies by a fixed hourly rate. Historical data is written but the filter by `projectType` doesn't match (Director doesn't set `projectType` on specs yet). Planned fix: v1.4.
-- **Single project at a time** — see Discord section above. Planned fix: v1.5.
+- **Single project at a time** — `PM_TOKEN` and `TECHLEAD_TOKEN` are global env vars; two projects running simultaneously would share the same bot identity. Planned fix: v1.5 per-project bot identity model.
 - **30s polling latency** — Issues and PRs are detected by polling every 30 seconds. Planned fix: v1.5 GitHub webhooks.
 - **In-memory state** — `activeProjects` is in RAM. A process crash loses all in-flight project state. Planned fix: v1.5 SQLite persistence.
+- **Estimation bootstrapping** — The historical mean requires 3+ past projects of the same `projectType`. New deployments and new project types always cold-start on the LLM estimate. Confidence improves naturally as the history grows.
+- **Actuals not tracked** — On project close, `actuals` is written as a copy of `estimate` (variance = 0). Real time-tracking is a v2.x item.
