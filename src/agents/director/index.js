@@ -25,6 +25,7 @@ class Director {
 
     this.ready = false;
     this.startTime = Date.now();
+    this.activeBriefs = {};
 
     this.client.once('clientReady', () => {
       console.log(`[Director] Online as ${this.client.user.tag}`);
@@ -54,13 +55,14 @@ class Director {
 
   async handleMessage(message) {
     const content = message.content.trim();
+    const channelId = message.channelId;
 
     if (content.toLowerCase().startsWith('brief:')) {
       const raw = content.slice(6).trim();
       const nameMatch = raw.match(/^\[([^\]]+)\]\s*(.*)/s);
       const projectName = nameMatch ? this._sanitizeName(nameMatch[1]) : null;
       const brief = nameMatch ? nameMatch[2].trim() : raw;
-      await this.processBrief(brief, message, projectName);
+      await this.startBriefConversation(brief, message, projectName);
       return;
     }
 
@@ -70,19 +72,51 @@ class Director {
       return;
     }
 
+    if (this.activeBriefs[channelId]) {
+      if (content.toLowerCase() === 'confirm') {
+        await this.confirmSpec(channelId);
+      } else if (content.toLowerCase() === 'cancel') {
+        delete this.activeBriefs[channelId];
+        await postToChannel(this.client, channelId, '🗑️ Draft spec cleared. Send a new brief when ready.');
+      } else {
+        await this.refineSpec(channelId, content);
+      }
+      return;
+    }
+
     const text = await this.think(content);
     const truncated = text.length > 1900 ? text.slice(0, 1900) + '...' : text;
-    await postToChannel(this.client, process.env.DISCORD_CHANNEL_DIRECTOR, truncated);
+    await postToChannel(this.client, channelId, truncated);
   }
 
-  async processBrief(brief, originalMessage, projectName = null) {
-    const directorChannel = process.env.DISCORD_CHANNEL_DIRECTOR;
-    const approvalsChannel = process.env.DISCORD_CHANNEL_APPROVALS;
-
-    await postToChannel(this.client, directorChannel, '📋 Brief received. Building project spec...');
+  async startBriefConversation(brief, message, projectName = null) {
+    const channelId = message.channelId;
+    await postToChannel(this.client, channelId, '📋 Brief received. Building draft spec...');
 
     const spec = await this.buildSpec(brief, projectName);
+    this.activeBriefs[channelId] = { spec, brief };
 
+    await postToChannel(this.client, channelId, this._formatDraftSpec(spec));
+  }
+
+  async refineSpec(channelId, instruction) {
+    const { spec } = this.activeBriefs[channelId];
+    await postToChannel(this.client, channelId, '🔄 Updating spec...');
+
+    const updatedSpec = await this._refineSpecWithModel(spec, instruction);
+    this.activeBriefs[channelId].spec = updatedSpec;
+
+    await postToChannel(this.client, channelId, this._formatDraftSpec(updatedSpec));
+  }
+
+  async confirmSpec(channelId) {
+    const activeBrief = this.activeBriefs[channelId];
+    if (!activeBrief) return;
+
+    const { spec } = activeBrief;
+    delete this.activeBriefs[channelId];
+
+    const approvalsChannel = process.env.DISCORD_CHANNEL_APPROVALS;
     const summaryMessage =
       `**New Project Spec — Awaiting Approval**\n\n` +
       `**Project:** ${spec.spec.projectName}\n` +
@@ -95,20 +129,83 @@ class Director {
       .fetch(approvalsChannel)
       .then(channel => channel.send(summaryMessage));
 
-    await postToChannel(this.client, directorChannel, `Spec sent to #approvals. Waiting for your confirmation.`);
+    await postToChannel(this.client, channelId, 'Spec sent to #approvals. Waiting for your confirmation.');
 
     try {
       const approved = await waitForApproval(this.client, approvalMessage.id, approvalsChannel);
 
       if (approved) {
-        await postToChannel(this.client, directorChannel, `✅ Spec approved. Spinning up PM and Tech Lead...`);
+        await postToChannel(this.client, channelId, '✅ Spec approved. Spinning up PM and Tech Lead...');
         await this.spawnManagers(spec);
       } else {
-        await postToChannel(this.client, directorChannel, `❌ Spec rejected. Send me a revised brief when ready.`);
+        await postToChannel(this.client, channelId, '❌ Spec rejected. Send me a revised brief when ready.');
       }
     } catch (err) {
       await postToChannel(this.client, process.env.DISCORD_CHANNEL_ALERTS, `⚠️ Approval timed out for project: ${spec.spec.projectName}`);
     }
+  }
+
+  _formatDraftSpec(spec) {
+    const s = spec.spec;
+    const deliverables = s.deliverables.map(d => `  - ${d.name}`).join('\n');
+    const packages = s.architecture.techStack.packages.join(', ');
+    const formatted =
+      `**Draft Spec — ${s.projectName}**\n\n` +
+      `**Goal:** ${s.brief.desiredOutcome}\n\n` +
+      `**Stack:** ${s.architecture.techStack.language} / ${s.architecture.techStack.runtime} / ${packages}\n\n` +
+      `**Deliverables:**\n${deliverables}\n\n` +
+      `Reply with changes, or type \`confirm\` to send to #approvals. Type \`cancel\` to start over.`;
+    return formatted.length > 1900 ? formatted.slice(0, 1900) + '...' : formatted;
+  }
+
+  async _refineSpecWithModel(currentSpec, instruction) {
+    return this.useClaudeApi
+      ? this._refineSpecWithClaude(currentSpec, instruction)
+      : this._refineSpecWithOllama(currentSpec, instruction);
+  }
+
+  async _refineSpecWithClaude(currentSpec, instruction) {
+    const prompt =
+      `Here is the current project spec:\n\n${JSON.stringify(currentSpec, null, 2)}\n\n` +
+      `The user wants to change: "${instruction}"\n\n` +
+      `Return ONLY the updated spec as valid JSON (no markdown, no backticks). Preserve all fields that do not need to change.`;
+
+    const response = await this.anthropic.messages.create({
+      model: this.model,
+      max_tokens: 1024,
+      system: [{ type: 'text', text: DIRECTOR_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    const text = response.content[0].text.trim();
+    try {
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) return JSON.parse(jsonMatch[0]);
+    } catch (err) {
+      console.error('[Director] Failed to parse refined spec:', err.message);
+    }
+    return currentSpec;
+  }
+
+  async _refineSpecWithOllama(currentSpec, instruction) {
+    const response = await fetch(`${this.ollamaUrl}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: this.model,
+        prompt: `You are the Director. Here is the current project spec:\n${JSON.stringify(currentSpec)}\n\nThe user wants: "${instruction}"\n\nReturn ONLY the updated spec as valid JSON, preserving unchanged fields.`,
+        stream: false
+      })
+    });
+    const data = await response.json();
+    const text = data.response.trim();
+    try {
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) return JSON.parse(jsonMatch[0]);
+    } catch (err) {
+      console.error('[Director] Failed to parse refined spec:', err.message);
+    }
+    return currentSpec;
   }
 
   async buildSpec(brief, projectName = null) {

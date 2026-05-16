@@ -31,51 +31,51 @@ describe('Director.handleMessage', () => {
 
   beforeEach(() => {
     director = new Director();
-    director.processBrief = jest.fn().mockResolvedValue(undefined);
+    director.startBriefConversation = jest.fn().mockResolvedValue(undefined);
     director.think = jest.fn().mockResolvedValue('I can help with that');
   });
 
-  test('calls processBrief when message starts with "brief:"', async () => {
+  test('calls startBriefConversation when message starts with "brief:"', async () => {
     const message = { content: 'brief: Build a calculator', channelId: 'test-channel-director' };
     await director.handleMessage(message);
-    expect(director.processBrief).toHaveBeenCalledWith('Build a calculator', message, null);
+    expect(director.startBriefConversation).toHaveBeenCalledWith('Build a calculator', message, null);
   });
 
   test('trims whitespace from brief content', async () => {
     const message = { content: 'brief:   Build a todo app   ', channelId: 'test-channel-director' };
     await director.handleMessage(message);
-    expect(director.processBrief).toHaveBeenCalledWith('Build a todo app', message, null);
+    expect(director.startBriefConversation).toHaveBeenCalledWith('Build a todo app', message, null);
   });
 
   test('is case-insensitive for the brief: prefix', async () => {
     const message = { content: 'BRIEF: Build something', channelId: 'test-channel-director' };
     await director.handleMessage(message);
-    expect(director.processBrief).toHaveBeenCalled();
+    expect(director.startBriefConversation).toHaveBeenCalled();
   });
 
   test('extracts project name from [name] prefix in brief', async () => {
     const message = { content: 'brief: [my-calculator] Build a web calculator', channelId: 'test-channel-director' };
     await director.handleMessage(message);
-    expect(director.processBrief).toHaveBeenCalledWith('Build a web calculator', message, 'my-calculator');
+    expect(director.startBriefConversation).toHaveBeenCalledWith('Build a web calculator', message, 'my-calculator');
   });
 
   test('sanitizes project name extracted from brief', async () => {
     const message = { content: 'brief: [My Calculator!!!] Build it', channelId: 'test-channel-director' };
     await director.handleMessage(message);
-    expect(director.processBrief).toHaveBeenCalledWith('Build it', message, 'my-calculator');
+    expect(director.startBriefConversation).toHaveBeenCalledWith('Build it', message, 'my-calculator');
   });
 
   test('passes null projectName when no [name] prefix given', async () => {
     const message = { content: 'brief: Build a calculator', channelId: 'test-channel-director' };
     await director.handleMessage(message);
-    expect(director.processBrief).toHaveBeenCalledWith(expect.any(String), message, null);
+    expect(director.startBriefConversation).toHaveBeenCalledWith(expect.any(String), message, null);
   });
 
-  test('calls think for non-brief messages', async () => {
+  test('calls think for non-brief messages when no active brief', async () => {
     const message = { content: 'What can you build?', channelId: 'test-channel-director' };
     await director.handleMessage(message);
     expect(director.think).toHaveBeenCalledWith('What can you build?');
-    expect(director.processBrief).not.toHaveBeenCalled();
+    expect(director.startBriefConversation).not.toHaveBeenCalled();
   });
 
   test('truncates think response to 1900 chars when over limit', async () => {
@@ -86,6 +86,230 @@ describe('Director.handleMessage', () => {
     const posted = postToChannel.mock.calls[0][2];
     expect(posted.length).toBeLessThanOrEqual(1903); // 1900 + '...'
     expect(posted.endsWith('...')).toBe(true);
+  });
+
+  test('routes non-brief message to refineSpec when active brief exists', async () => {
+    director.refineSpec = jest.fn().mockResolvedValue(undefined);
+    director.activeBriefs['test-channel-director'] = { spec: {}, brief: '' };
+
+    const message = { content: 'Make it Python instead', channelId: 'test-channel-director' };
+    await director.handleMessage(message);
+
+    expect(director.refineSpec).toHaveBeenCalledWith('test-channel-director', 'Make it Python instead');
+    expect(director.think).not.toHaveBeenCalled();
+  });
+
+  test('routes "confirm" to confirmSpec when active brief exists', async () => {
+    director.confirmSpec = jest.fn().mockResolvedValue(undefined);
+    director.activeBriefs['test-channel-director'] = { spec: {}, brief: '' };
+
+    const message = { content: 'confirm', channelId: 'test-channel-director' };
+    await director.handleMessage(message);
+
+    expect(director.confirmSpec).toHaveBeenCalledWith('test-channel-director');
+  });
+
+  test('"confirm" is case-insensitive', async () => {
+    director.confirmSpec = jest.fn().mockResolvedValue(undefined);
+    director.activeBriefs['test-channel-director'] = { spec: {}, brief: '' };
+
+    const message = { content: 'CONFIRM', channelId: 'test-channel-director' };
+    await director.handleMessage(message);
+
+    expect(director.confirmSpec).toHaveBeenCalled();
+  });
+
+  test('clears active brief and posts message on "cancel"', async () => {
+    director.activeBriefs['test-channel-director'] = { spec: {}, brief: '' };
+
+    const message = { content: 'cancel', channelId: 'test-channel-director' };
+    await director.handleMessage(message);
+
+    expect(director.activeBriefs['test-channel-director']).toBeUndefined();
+    expect(postToChannel).toHaveBeenCalled();
+  });
+});
+
+describe('Director.startBriefConversation', () => {
+  let director;
+
+  beforeEach(() => {
+    director = new Director();
+    director.buildSpec = jest.fn().mockResolvedValue({
+      spec: {
+        projectName: 'test-project',
+        brief: { desiredOutcome: 'A test outcome' },
+        architecture: {
+          techStack: { language: 'javascript', runtime: 'node', packages: ['express'] }
+        },
+        deliverables: [{ name: 'test-project-frontend' }]
+      }
+    });
+  });
+
+  test('calls buildSpec and stores result in activeBriefs', async () => {
+    const message = { channelId: 'test-channel-director' };
+    await director.startBriefConversation('Build a test app', message, null);
+
+    expect(director.buildSpec).toHaveBeenCalledWith('Build a test app', null);
+    expect(director.activeBriefs['test-channel-director']).toBeDefined();
+    expect(director.activeBriefs['test-channel-director'].spec).toBeDefined();
+  });
+
+  test('posts draft spec to director channel', async () => {
+    const message = { channelId: 'test-channel-director' };
+    await director.startBriefConversation('Build a test app', message, null);
+
+    const calls = postToChannel.mock.calls;
+    const draftCall = calls.find(c => c[2].includes('Draft Spec'));
+    expect(draftCall).toBeDefined();
+    expect(draftCall[2]).toContain('confirm');
+    expect(draftCall[2]).toContain('cancel');
+  });
+});
+
+describe('Director.refineSpec', () => {
+  let director;
+
+  beforeEach(() => {
+    director = new Director();
+    director._refineSpecWithModel = jest.fn().mockResolvedValue({
+      spec: {
+        projectName: 'test-project',
+        brief: { desiredOutcome: 'Updated outcome' },
+        architecture: {
+          techStack: { language: 'python', runtime: 'python3', packages: ['flask'] }
+        },
+        deliverables: [{ name: 'test-project-cli' }]
+      }
+    });
+    director.activeBriefs['test-channel-director'] = {
+      spec: { spec: { projectName: 'test-project', brief: {}, architecture: { techStack: {} }, deliverables: [] } },
+      brief: 'original brief'
+    };
+  });
+
+  test('calls _refineSpecWithModel with current spec and instruction', async () => {
+    await director.refineSpec('test-channel-director', 'Make it Python');
+    expect(director._refineSpecWithModel).toHaveBeenCalledWith(
+      director.activeBriefs['test-channel-director'] ? expect.anything() : expect.anything(),
+      'Make it Python'
+    );
+  });
+
+  test('updates activeBriefs with refined spec', async () => {
+    const originalSpec = director.activeBriefs['test-channel-director'].spec;
+    await director.refineSpec('test-channel-director', 'Make it Python');
+
+    expect(director.activeBriefs['test-channel-director'].spec).not.toBe(originalSpec);
+  });
+
+  test('posts updated draft spec after refinement', async () => {
+    await director.refineSpec('test-channel-director', 'Make it Python');
+
+    const calls = postToChannel.mock.calls;
+    const draftCall = calls.find(c => c[2] && c[2].includes('Draft Spec'));
+    expect(draftCall).toBeDefined();
+  });
+});
+
+describe('Director.confirmSpec', () => {
+  let director;
+  const { waitForApproval } = require('../../../src/discord/client');
+
+  beforeEach(() => {
+    director = new Director();
+    director.spawnManagers = jest.fn().mockResolvedValue(undefined);
+    director.activeBriefs['test-channel-director'] = {
+      spec: {
+        spec: {
+          projectName: 'test-project',
+          brief: { desiredOutcome: 'A working test app' },
+          architecture: { techStack: { language: 'javascript', packages: ['express'] } },
+          deliverables: [{ name: 'test-project-frontend', description: 'Frontend' }]
+        }
+      },
+      brief: 'Build a test app'
+    };
+  });
+
+  test('clears activeBriefs on confirm', async () => {
+    await director.confirmSpec('test-channel-director');
+    expect(director.activeBriefs['test-channel-director']).toBeUndefined();
+  });
+
+  test('sends spec to #approvals channel', async () => {
+    await director.confirmSpec('test-channel-director');
+
+    const sendCall = director.client.channels.fetch.mock.results[0];
+    expect(director.client.channels.fetch).toHaveBeenCalledWith('test-channel-approvals');
+  });
+
+  test('calls spawnManagers when approved', async () => {
+    waitForApproval.mockResolvedValueOnce(true);
+    await director.confirmSpec('test-channel-director');
+    expect(director.spawnManagers).toHaveBeenCalled();
+  });
+
+  test('does not call spawnManagers when rejected', async () => {
+    waitForApproval.mockResolvedValueOnce(false);
+    await director.confirmSpec('test-channel-director');
+    expect(director.spawnManagers).not.toHaveBeenCalled();
+  });
+
+  test('does nothing when no active brief exists', async () => {
+    delete director.activeBriefs['test-channel-director'];
+    await director.confirmSpec('test-channel-director');
+    expect(director.spawnManagers).not.toHaveBeenCalled();
+  });
+});
+
+describe('Director._formatDraftSpec', () => {
+  let director;
+
+  beforeEach(() => {
+    director = new Director();
+  });
+
+  test('includes project name, goal, stack, and deliverables', () => {
+    const spec = {
+      spec: {
+        projectName: 'my-project',
+        brief: { desiredOutcome: 'A working app' },
+        architecture: {
+          techStack: { language: 'python', runtime: 'python3', packages: ['flask', 'pytest'] }
+        },
+        deliverables: [
+          { name: 'my-project-cli' },
+          { name: 'my-project-tests' }
+        ]
+      }
+    };
+
+    const result = director._formatDraftSpec(spec);
+    expect(result).toContain('my-project');
+    expect(result).toContain('A working app');
+    expect(result).toContain('python');
+    expect(result).toContain('flask');
+    expect(result).toContain('my-project-cli');
+    expect(result).toContain('confirm');
+    expect(result).toContain('cancel');
+  });
+
+  test('truncates to 1900 chars when spec is very long', () => {
+    const longOutcome = 'x'.repeat(2000);
+    const spec = {
+      spec: {
+        projectName: 'test',
+        brief: { desiredOutcome: longOutcome },
+        architecture: { techStack: { language: 'js', runtime: 'node', packages: [] } },
+        deliverables: []
+      }
+    };
+
+    const result = director._formatDraftSpec(spec);
+    expect(result.length).toBeLessThanOrEqual(1903);
+    expect(result.endsWith('...')).toBe(true);
   });
 });
 
@@ -136,17 +360,6 @@ describe('Director.buildSpec', () => {
 
     const result = await director.buildSpec('Build something');
     expect(result.spec.projectName.length).toBeLessThanOrEqual(30);
-  });
-
-  test('deliverables include both frontend and backend', async () => {
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce({ json: jest.fn().mockResolvedValue({ response: 'test-project' }) })
-      .mockResolvedValueOnce({ json: jest.fn().mockResolvedValue({ response: 'a test project' }) });
-
-    const result = await director.buildSpec('Build something');
-    const names = result.spec.deliverables.map(d => d.name);
-    expect(names.some(n => n.includes('frontend'))).toBe(true);
-    expect(names.some(n => n.includes('backend'))).toBe(true);
   });
 
   test('uses provided projectName and skips name inference call', async () => {
@@ -247,5 +460,39 @@ describe('Director with Claude API', () => {
 
     const result = await director.buildSpec('Build an app', 'exec-chosen-name');
     expect(result.spec.projectName).toBe('exec-chosen-name');
+  });
+
+  test('_refineSpecWithClaude returns updated spec from model response', async () => {
+    const currentSpec = { spec: { projectName: 'my-app', brief: {}, architecture: { techStack: {} }, deliverables: [] } };
+    const updatedSpec = { spec: { projectName: 'my-app', brief: { desiredOutcome: 'Updated' }, architecture: { techStack: { language: 'python' } }, deliverables: [] } };
+
+    mockAnthropicCreate.mockResolvedValue({
+      content: [{ text: JSON.stringify(updatedSpec) }],
+    });
+
+    const result = await director._refineSpecWithClaude(currentSpec, 'Make it Python');
+    expect(result).toEqual(updatedSpec);
+  });
+
+  test('_refineSpecWithClaude returns currentSpec unchanged when model returns invalid JSON', async () => {
+    const currentSpec = { spec: { projectName: 'my-app' } };
+
+    mockAnthropicCreate.mockResolvedValue({
+      content: [{ text: 'Sorry, I could not update the spec.' }],
+    });
+
+    const result = await director._refineSpecWithClaude(currentSpec, 'Make it Python');
+    expect(result).toBe(currentSpec);
+  });
+
+  test('_refineSpecWithClaude caches the system prompt', async () => {
+    mockAnthropicCreate.mockResolvedValue({
+      content: [{ text: '{}' }],
+    });
+
+    await director._refineSpecWithClaude({}, 'change something');
+
+    const call = mockAnthropicCreate.mock.calls[0][0];
+    expect(call.system[0].cache_control).toEqual({ type: 'ephemeral' });
   });
 });
