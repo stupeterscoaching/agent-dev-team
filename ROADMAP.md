@@ -38,18 +38,17 @@ Each project gets its own GitHub repo (created by PM). Estimation history is wri
 - Tech-stack-aware spec generation — LLM generates the full spec (projectType, architecture, techStack, deliverables); Python/Go briefs produce Python/Go specs; validated against `src/contracts/spec.schema.json` with retry (#114)
 - Real estimation — PM uses historical mean from bessemer-state when ≥ 3 past projects match `projectType`; cold-start LLM fallback with honest confidence flags; `projectType` written to history on close (#115)
 
+### v1.5.0 — Persistence + real concurrency
+- SQLite persistence for `activeProjects` via `better-sqlite3` — DAL at `src/state/db.js`, single numbered migration, `:memory:` tests (#116)
+- Crash recovery via `Pipeline.resume()` — loads open projects from SQLite, pre-populates `spawnedIssues` from open GitHub PRs (no double-spawning), re-instantiates agents and restarts watchers, posts recovery summary to `#director` (#117)
+- GitHub webhook receiver — Express server at `src/webhooks/github.js`, HMAC-SHA256 signature verification, PM registers webhook on repo creation; pollers kept as 5-min safety net (#118)
+- Project-scoped approval syntax — `waitForApproval` accepts `approve: {project-name}` and `reject: {project-name}` for unambiguous multi-project gate resolution; Director and PM show the scoped form in approval messages (#119 Option A)
+
 ---
 
 ## v1.x — Making it real software
 
-The v1.x line is about closing the gap between **what the docs claim** and **what the code does**. After v1.5 the system should be something a working developer can use without caveats.
-
-### v1.5.0 — Persistence + real concurrency
-Today `activeProjects` is in-memory. A crash loses all in-flight state. `PM_TOKEN` and `TECHLEAD_TOKEN` are global env vars, so the system can only handle one project at a time even though the data model suggests otherwise.
-- SQLite (or Postgres) for `activeProjects`, agent state, run history
-- Crash recovery — resume in-flight projects on restart
-- GitHub webhooks replace 30-second polling
-- Per-project bot identity model — either dynamic bot provisioning or threaded single-bot with channel-scoped contexts
+The v1.x line is about closing the gap between **what the docs claim** and **what the code does**. v1.5 ships the persistence and concurrency foundations. The system is now something a working developer can use without caveats.
 
 ---
 

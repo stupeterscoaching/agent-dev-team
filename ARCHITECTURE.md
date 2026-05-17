@@ -177,13 +177,14 @@ PM creates GitHub Labels in project repo
 PM creates GitHub Issues from spec deliverables in project repo
 
 PHASE 4 — EXECUTION
-watchIssues polls project repo every 30s for open Issues
+PM registers GitHub webhook on project repo (issues + pull_request events)
+Webhook receiver (port WEBHOOK_PORT) is primary trigger for workers and reviews
+Pollers run every 5 minutes as safety net for dropped webhooks
 Worker spawns per Issue based on type: label (Coder / Writer / Researcher)
 Coder/Writer: branch → work → commit → PR → discard
 Researcher: research → Issue comment → close Issue → discard
-watchPRs polls project repo every 30s for open PRs
 Tech Lead reviews PRs → merges or rejects
-Rejected PRs → Issue requeued → worker respawns next poll
+Rejected PRs → Issue requeued → worker respawns on next trigger
 Merged PRs → Issue closed → Tech Lead checks completion
 
 PHASE 5 — CLOSE DETECTION
@@ -265,14 +266,15 @@ Per-project bots (ephemeral — spawned with PM and Tech Lead):
 Workers post via webhook — no bot token, no persistent identity.
 ```
 
-**Note on concurrency:** `PM_TOKEN` and `TECHLEAD_TOKEN` are global env vars. True multi-project concurrency is not yet supported — two projects running simultaneously would share the same PM/Tech Lead bot identity. See ROADMAP.md v1.5.0 for the planned fix.
+**Multi-project approval:** Approval messages in `#approvals` now show `approve: {project-name}` / `reject: {project-name}` syntax. Both the scoped form and plain `approve`/`reject` are accepted. The scoped form prevents ambiguity when two projects are waiting for approval simultaneously.
+
+**Note on concurrency:** `PM_TOKEN` and `TECHLEAD_TOKEN` are global env vars. Two simultaneous projects each create a PM and TechLead instance sharing the same Discord session (same bot). They post to different project channels, so output is separated. True per-session isolation would require separate tokens — a v2.x improvement.
 
 ---
 
-## Known Limitations (v1.4)
+## Known Limitations (v1.5)
 
-- **Single project at a time** — `PM_TOKEN` and `TECHLEAD_TOKEN` are global env vars; two projects running simultaneously would share the same bot identity. Planned fix: v1.5 per-project bot identity model.
-- **30s polling latency** — Issues and PRs are detected by polling every 30 seconds. Planned fix: v1.5 GitHub webhooks.
-- **In-memory state** — `activeProjects` is in RAM. A process crash loses all in-flight project state. Planned fix: v1.5 SQLite persistence.
+- **Shared bot sessions** — Two concurrent projects share the same PM Discord session and the same TechLead Discord session (`PM_TOKEN`/`TECHLEAD_TOKEN` are global). Output is separated by project channel; approval disambiguation is handled by the `approve: {name}` syntax. True session isolation requires separate tokens.
+- **5-min polling fallback** — Webhooks are the primary trigger (v1.5). Pollers run every 5 minutes as a safety net for dropped webhooks. Projects without `WEBHOOK_URL`/`GITHUB_WEBHOOK_SECRET` configured still rely on the 5-min poller.
 - **Estimation bootstrapping** — The historical mean requires 3+ past projects of the same `projectType`. New deployments and new project types always cold-start on the LLM estimate. Confidence improves naturally as the history grows.
 - **Actuals not tracked** — On project close, `actuals` is written as a copy of `estimate` (variance = 0). Real time-tracking is a v2.x item.

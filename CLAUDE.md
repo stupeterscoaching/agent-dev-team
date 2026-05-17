@@ -28,11 +28,14 @@ Director (persistent) → PM + Tech Lead (ephemeral, per project) → Coder (eph
 
 ### Orchestration
 
-`src/pipeline/index.js` is the main orchestrator. After PM finishes, it starts two pollers (30s interval each):
-- `watchIssues` — spawns a Coder per open Issue (tracks already-spawned via `Set`)
-- `watchPRs` — triggers Tech Lead review per open PR
+`src/pipeline/index.js` is the main orchestrator. After PM finishes, it:
+1. Saves project state to SQLite (`src/state/db.js`) — persists through crashes
+2. Starts two pollers (5-min interval each) as fallback safety nets:
+   - `watchIssues` — spawns a Coder per open Issue (tracks already-spawned via `Set`)
+   - `watchPRs` — triggers Tech Lead review per open PR
+3. Receives GitHub webhooks via `src/webhooks/github.js` (Express on `WEBHOOK_PORT`) — webhooks are the primary trigger; pollers are the eventual-consistency fallback
 
-Both pollers operate on the **project repo** (created by PM), not the `agent-dev-team` repo itself.
+`Pipeline.resume()` is called at startup and re-instantiates any projects that were active when the process last crashed. Both pollers operate on the **project repo** (created by PM), not the `agent-dev-team` repo itself.
 
 ### Key constraint: GitHub Issues as complete task briefs
 
@@ -44,13 +47,13 @@ Because workers are stateless (no shared memory), every GitHub Issue must be ent
 - **GitHub** — source of truth for work. Issues = task backlog, branches = active work, merged PRs = completed work.
 - **Ollama** — local model inference for all agents. Director/managers default to `llama3.1:8b`, workers to `llama3.2:latest`. Model vars are in `.env`.
 
-### State without a database
+### State
 
 | State | Location |
 |---|---|
+| Active projects | SQLite at `./state/agent-dev-team.db` (`src/state/db.js`) |
 | Task backlog | GitHub Issues (project repo) |
-| Estimation memory | `projects/estimation-history.json` |
-| Project spec | `projects/{name}/project.json` |
+| Estimation memory | `projects/estimation-history.json` (local) + `bessemer-state` repo (cross-project) |
 
 ### How agents communicate
 
@@ -94,6 +97,28 @@ DIRECTOR_MODEL / MANAGER_MODEL / WORKER_MODEL
 - feature/* → develop → main
 - Never commit directly to main or develop
 - Full file output preferred over snippets
+
+## Session Handoff Protocol
+
+At the end of every coding session, write a `HANDOFF.md` in this repo root with the following format:
+
+```
+# Bessemer Handoff — YYYY-MM-DD
+
+## What was worked on
+[What changed this session]
+
+## In progress / incomplete
+[Anything half-finished, broken, or mid-PR]
+
+## Next move
+[The single most important thing to do next session]
+
+## Decisions made
+[Any architectural or strategic calls worth logging — these get copied to the AIOS decisions/log.md]
+```
+
+Stu pastes this into his AIOS session (~/AI-dev/AI-OS) after each bessemer coding session. Delete the file once it's been handed off. This is how strategic context and coding context stay in sync.
 
 ## Agent Branching (runtime behaviour — not dev practice)
 - Workers branch as: {agent}/{taskId}/{short-description}
