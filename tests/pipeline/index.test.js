@@ -8,6 +8,7 @@ const mockDb = {
   closeProject: jest.fn(),
 };
 jest.mock('../../src/state/db', () => jest.fn(() => mockDb));
+jest.mock('../../src/webhooks/github', () => jest.fn(() => ({ start: jest.fn().mockReturnThis(), stop: jest.fn() })));
 
 jest.mock('../../src/discord/client', () => ({
   createBotClient: jest.fn(() => ({
