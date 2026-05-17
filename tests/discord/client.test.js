@@ -40,7 +40,7 @@ describe('waitForApproval', () => {
   }
 
   test('resolves true when "approve" is received in the correct channel', async () => {
-    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', 5000);
+    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', null, 5000);
     const handler = getHandler();
 
     handler({ author: { bot: false, tag: 'User#1234' }, channelId: 'channel-1', content: 'approve' });
@@ -49,7 +49,7 @@ describe('waitForApproval', () => {
   });
 
   test('resolves false when "reject" is received', async () => {
-    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', 5000);
+    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', null, 5000);
     const handler = getHandler();
 
     handler({ author: { bot: false, tag: 'User#1234' }, channelId: 'channel-1', content: 'reject' });
@@ -58,7 +58,7 @@ describe('waitForApproval', () => {
   });
 
   test('resolves false on timeout', async () => {
-    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', 1000);
+    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', null, 1000);
 
     jest.advanceTimersByTime(1001);
 
@@ -66,7 +66,7 @@ describe('waitForApproval', () => {
   });
 
   test('ignores messages from bots', async () => {
-    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', 1000);
+    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', null, 1000);
     const handler = getHandler();
 
     handler({ author: { bot: true, tag: 'Bot#0000' }, channelId: 'channel-1', content: 'approve' });
@@ -76,7 +76,7 @@ describe('waitForApproval', () => {
   });
 
   test('ignores messages from wrong channel', async () => {
-    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', 1000);
+    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', null, 1000);
     const handler = getHandler();
 
     handler({ author: { bot: false, tag: 'User#1234' }, channelId: 'channel-other', content: 'approve' });
@@ -86,7 +86,7 @@ describe('waitForApproval', () => {
   });
 
   test('removes listener after resolving', async () => {
-    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', 5000);
+    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', null, 5000);
     const handler = getHandler();
 
     handler({ author: { bot: false, tag: 'User#1234' }, channelId: 'channel-1', content: 'approve' });
@@ -96,7 +96,7 @@ describe('waitForApproval', () => {
   });
 
   test('removes listener on timeout', async () => {
-    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', 1000);
+    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', null, 1000);
     const handler = getHandler();
 
     jest.advanceTimersByTime(1001);
@@ -109,7 +109,7 @@ describe('waitForApproval', () => {
     const mockSend = jest.fn().mockResolvedValue(undefined);
     mockClient.channels.fetch.mockResolvedValue({ send: mockSend });
 
-    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', 1000);
+    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', null, 1000);
     jest.advanceTimersByTime(1001);
     await promise;
     await Promise.resolve(); // flush the fire-and-forget channel.send
@@ -119,12 +119,49 @@ describe('waitForApproval', () => {
   });
 
   test('accepts approve with mixed case and surrounding whitespace', async () => {
-    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', 5000);
+    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', null, 5000);
     const handler = getHandler();
 
     handler({ author: { bot: false, tag: 'User#1234' }, channelId: 'channel-1', content: '  APPROVE  ' });
 
     await expect(promise).resolves.toBe(true);
+  });
+
+  test('accepts "approve: project-name" when projectName is set', async () => {
+    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', 'my-project', 5000);
+    const handler = getHandler();
+
+    handler({ author: { bot: false, tag: 'User#1234' }, channelId: 'channel-1', content: 'approve: my-project' });
+
+    await expect(promise).resolves.toBe(true);
+  });
+
+  test('accepts "reject: project-name" when projectName is set', async () => {
+    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', 'my-project', 5000);
+    const handler = getHandler();
+
+    handler({ author: { bot: false, tag: 'User#1234' }, channelId: 'channel-1', content: 'reject: my-project' });
+
+    await expect(promise).resolves.toBe(false);
+  });
+
+  test('still accepts plain "approve" even when projectName is set', async () => {
+    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', 'my-project', 5000);
+    const handler = getHandler();
+
+    handler({ author: { bot: false, tag: 'User#1234' }, channelId: 'channel-1', content: 'approve' });
+
+    await expect(promise).resolves.toBe(true);
+  });
+
+  test('ignores "approve: other-project" when waiting for a different project', async () => {
+    const promise = waitForApproval(mockClient, 'msg-1', 'channel-1', 'my-project', 1000);
+    const handler = getHandler();
+
+    handler({ author: { bot: false, tag: 'User#1234' }, channelId: 'channel-1', content: 'approve: other-project' });
+
+    jest.advanceTimersByTime(1001);
+    await expect(promise).resolves.toBe(false);
   });
 });
 

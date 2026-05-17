@@ -216,11 +216,11 @@ class PMAgent {
         `**Hours:** ${estimate.hours}\n` +
         `**Confidence:** ${estimate.confidence}\n\n` +
         `\`\`\`json\n${estimateJson}\n\`\`\`\n\n` +
-        `Type \`approve\` to confirm or \`reject\` to decline.`
+        `Type \`approve: ${this.spec.projectName}\` to confirm or \`reject: ${this.spec.projectName}\` to decline. (Plain \`approve\`/\`reject\` also works.)`
       ));
 
     try {
-      return await waitForApproval(this.client, approvalMessage.id, approvalsChannel);
+      return await waitForApproval(this.client, approvalMessage.id, approvalsChannel, this.spec.projectName);
     } catch (err) {
       await postToChannel(
         this.client,
