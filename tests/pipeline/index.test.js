@@ -1,6 +1,14 @@
 const mockCreateProjectChannel = jest.fn();
 const mockArchiveProjectChannel = jest.fn();
 
+const mockDb = {
+  saveProject: jest.fn(),
+  updateProject: jest.fn(),
+  getOpenProjects: jest.fn().mockReturnValue([]),
+  closeProject: jest.fn(),
+};
+jest.mock('../../src/state/db', () => jest.fn(() => mockDb));
+
 jest.mock('../../src/discord/client', () => ({
   createBotClient: jest.fn(() => ({
     on: jest.fn(), once: jest.fn(), off: jest.fn(),
