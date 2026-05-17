@@ -7,6 +7,7 @@ const WriterAgent = require('../agents/workers/writer');
 const { Octokit } = require('@octokit/rest');
 const { createProjectChannel, archiveProjectChannel, postToChannel } = require('../discord/client');
 const AgentDB = require('../state/db');
+const GitHubWebhookServer = require('../webhooks/github');
 const fs = require('fs');
 const path = require('path');
 
@@ -25,6 +26,7 @@ class Pipeline {
     this.director.spawnManagers = this.spawnManagers.bind(this);
     this.director.onProjectClose = this.closeProject.bind(this);
     console.log('[Pipeline] Director online. Waiting for project brief.');
+    this.webhookServer = new GitHubWebhookServer(this).start();
     await this.resume();
   }
 
@@ -221,7 +223,7 @@ class Pipeline {
         console.error(`[Pipeline] Issue watch error: ${err.message}`);
       }
 
-      setTimeout(poll, 30000);
+      setTimeout(poll, 300000);
     };
 
     // Wait 5 seconds before first poll to let GitHub index the new Issues
@@ -265,7 +267,7 @@ class Pipeline {
         console.error(`[Pipeline] PR watch error: ${err.message}`);
       }
 
-      setTimeout(poll, 30000);
+      setTimeout(poll, 300000);
     };
 
     setTimeout(poll, 10000);
