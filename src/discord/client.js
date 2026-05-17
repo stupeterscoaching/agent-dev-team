@@ -62,13 +62,22 @@ async function postToChannel(client, channelId, content) {
 /**
  * Waits for an approve/reject message in #approvals from the executive.
  * Resolves true for approve, false for reject or timeout.
+ *
+ * Accepts plain "approve"/"reject" for single-project scenarios.
+ * Accepts "approve: {projectName}"/"reject: {projectName}" for multi-project disambiguation.
+ * Both forms work simultaneously — the project-scoped form is encouraged when multiple
+ * projects may be waiting for approval at the same time.
+ *
  * @param {Client} client
  * @param {string} messageId
  * @param {string} channelId
+ * @param {string|null} projectName - used for project-scoped approval matching
  * @param {number} timeoutMs - defaults to APPROVAL_TIMEOUT_MS env var or 30 minutes
  * @returns {Promise<boolean>}
  */
-function waitForApproval(client, messageId, channelId, timeoutMs = parseInt(process.env.APPROVAL_TIMEOUT_MS) || 1800000) {
+function waitForApproval(client, messageId, channelId, projectName = null, timeoutMs = parseInt(process.env.APPROVAL_TIMEOUT_MS) || 1800000) {
+  const projectKey = projectName ? projectName.toLowerCase() : null;
+
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       client.off('messageCreate', handler);
@@ -83,13 +92,15 @@ function waitForApproval(client, messageId, channelId, timeoutMs = parseInt(proc
       if (message.channelId !== channelId) return;
 
       const content = message.content.trim().toLowerCase();
+      const isApprove = content === 'approve' || (projectKey && content === `approve: ${projectKey}`);
+      const isReject = content === 'reject' || (projectKey && content === `reject: ${projectKey}`);
 
-      if (content === 'approve') {
+      if (isApprove) {
         console.log(`[Approval] ✅ Approved by ${message.author.tag}`);
         clearTimeout(timer);
         client.off('messageCreate', handler);
         resolve(true);
-      } else if (content === 'reject') {
+      } else if (isReject) {
         console.log(`[Approval] ❌ Rejected by ${message.author.tag}`);
         clearTimeout(timer);
         client.off('messageCreate', handler);
