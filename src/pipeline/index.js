@@ -6,15 +6,17 @@ const ResearcherAgent = require('../agents/workers/researcher');
 const WriterAgent = require('../agents/workers/writer');
 const { Octokit } = require('@octokit/rest');
 const { createProjectChannel, archiveProjectChannel } = require('../discord/client');
+const AgentDB = require('../state/db');
 const fs = require('fs');
 const path = require('path');
 
 class Pipeline {
-  constructor() {
+  constructor({ db } = {}) {
     this.octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
     this.owner = process.env.GITHUB_OWNER;
     this.repo = process.env.GITHUB_REPO;
     this.activeProjects = {};
+    this.db = db || new AgentDB(process.env.DB_PATH);
   }
 
   async start() {
@@ -49,11 +51,20 @@ class Pipeline {
     // Tech Lead fires immediately — no approval needed
     techLead.run().catch(err => console.error('[TechLead] Error:', err.message));
 
-    // PM runs, then starts watchers when done
+    // PM runs, then persists state and starts watchers
     pm.run()
       .then(() => {
         console.log(`[Pipeline] PM finished. Starting watchers for: ${projectName}`);
         const projectRepo = pm.projectRepo;
+        if (projectRepo) {
+          this.db.saveProject(projectName, {
+            spec: spec.spec,
+            channels: projectChannels,
+            projectRepo,
+            estimate: pm.estimate,
+            status: 'active',
+          });
+        }
         this.watchIssues(projectName, projectRepo);
         this.watchPRs(projectName, projectRepo);
       })
@@ -222,6 +233,7 @@ class Pipeline {
       await archiveProjectChannel(this.director.client, projectChannelId, process.env.DISCORD_GUILD_ID);
     }
 
+    this.db.closeProject(projectName);
     delete this.activeProjects[projectName];
     console.log(`[Pipeline] Project closed: ${projectName}`);
   }
