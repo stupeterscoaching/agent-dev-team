@@ -89,6 +89,8 @@ class PMAgent {
       console.log(`[PM] Project repo created: ${repo.html_url}`);
       await this.postToManagers(`📦 Project repo created: ${repo.html_url}`);
 
+      await this._registerWebhook(repo.owner.login, repo.name);
+
       return {
         owner: repo.owner.login,
         repo: repo.name,
@@ -214,11 +216,11 @@ class PMAgent {
         `**Hours:** ${estimate.hours}\n` +
         `**Confidence:** ${estimate.confidence}\n\n` +
         `\`\`\`json\n${estimateJson}\n\`\`\`\n\n` +
-        `Type \`approve\` to confirm or \`reject\` to decline.`
+        `Type \`approve: ${this.spec.projectName}\` to confirm or \`reject: ${this.spec.projectName}\` to decline. (Plain \`approve\`/\`reject\` also works.)`
       ));
 
     try {
-      return await waitForApproval(this.client, approvalMessage.id, approvalsChannel);
+      return await waitForApproval(this.client, approvalMessage.id, approvalsChannel, this.spec.projectName);
     } catch (err) {
       await postToChannel(
         this.client,
@@ -313,6 +315,33 @@ ${JSON.stringify(architecture, null, 2)}`;
       });
 
       await this.postToManagers(`📌 Issue created: #${issue.data.number} — ${deliverable.name}`);
+    }
+  }
+
+  /**
+   * Registers a GitHub webhook on the project repo for issues and pull_request events.
+   * No-ops when WEBHOOK_URL or GITHUB_WEBHOOK_SECRET are not set.
+   */
+  async _registerWebhook(owner, repo) {
+    const webhookUrl = process.env.WEBHOOK_URL;
+    const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
+    if (!webhookUrl || !webhookSecret) return;
+
+    try {
+      await this.octokit.repos.createWebhook({
+        owner,
+        repo,
+        config: {
+          url: `${webhookUrl}/webhooks/github`,
+          secret: webhookSecret,
+          content_type: 'json',
+        },
+        events: ['issues', 'pull_request'],
+        active: true,
+      });
+      console.log(`[PM] GitHub webhook registered for ${owner}/${repo}`);
+    } catch (err) {
+      console.warn(`[PM] Could not register webhook for ${owner}/${repo}: ${err.message}`);
     }
   }
 

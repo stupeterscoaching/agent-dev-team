@@ -123,7 +123,7 @@ class Director {
       `**Goal:** ${spec.spec.brief.desiredOutcome}\n\n` +
       `**Deliverables:**\n${spec.spec.deliverables.map(d => `- ${d.name}: ${d.description}`).join('\n')}\n\n` +
       `**Tech Stack:** ${spec.spec.architecture.techStack.language} / ${spec.spec.architecture.techStack.packages.join(', ')}\n\n` +
-      `Type \`approve\` to confirm or \`reject\` to request changes.`;
+      `Type \`approve: ${spec.spec.projectName}\` to confirm or \`reject: ${spec.spec.projectName}\` to request changes. (Plain \`approve\`/\`reject\` also works.)`;
 
     const approvalMessage = await this.client.channels
       .fetch(approvalsChannel)
@@ -132,7 +132,7 @@ class Director {
     await postToChannel(this.client, channelId, 'Spec sent to #approvals. Waiting for your confirmation.');
 
     try {
-      const approved = await waitForApproval(this.client, approvalMessage.id, approvalsChannel);
+      const approved = await waitForApproval(this.client, approvalMessage.id, approvalsChannel, spec.spec.projectName);
 
       if (approved) {
         await postToChannel(this.client, channelId, '✅ Spec approved. Spinning up PM and Tech Lead...');

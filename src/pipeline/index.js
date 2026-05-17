@@ -5,16 +5,19 @@ const CoderAgent = require('../agents/workers/coder');
 const ResearcherAgent = require('../agents/workers/researcher');
 const WriterAgent = require('../agents/workers/writer');
 const { Octokit } = require('@octokit/rest');
-const { createProjectChannel, archiveProjectChannel } = require('../discord/client');
+const { createProjectChannel, archiveProjectChannel, postToChannel } = require('../discord/client');
+const AgentDB = require('../state/db');
+const GitHubWebhookServer = require('../webhooks/github');
 const fs = require('fs');
 const path = require('path');
 
 class Pipeline {
-  constructor() {
+  constructor({ db } = {}) {
     this.octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
     this.owner = process.env.GITHUB_OWNER;
     this.repo = process.env.GITHUB_REPO;
     this.activeProjects = {};
+    this.db = db || new AgentDB(process.env.DB_PATH);
   }
 
   async start() {
@@ -23,6 +26,93 @@ class Pipeline {
     this.director.spawnManagers = this.spawnManagers.bind(this);
     this.director.onProjectClose = this.closeProject.bind(this);
     console.log('[Pipeline] Director online. Waiting for project brief.');
+    this.webhookServer = new GitHubWebhookServer(this).start();
+    await this.resume();
+  }
+
+  async resume() {
+    const openProjects = this.db.getOpenProjects();
+    if (!openProjects.length) return;
+
+    console.log(`[Pipeline] Resuming ${openProjects.length} in-flight project(s)...`);
+    let resumed = 0;
+    let failed = 0;
+
+    for (const row of openProjects) {
+      const { name, spec, channels, projectRepo, estimate } = row;
+      try {
+        if (!projectRepo) {
+          console.warn(`[Pipeline] Skipping ${name} — PM had not finished when process crashed`);
+          failed++;
+          continue;
+        }
+
+        // Determine which issues already have open PRs so we don't double-spawn Coders
+        let coveredIssues = new Set();
+        try {
+          const { data: openPRs } = await this.octokit.pulls.list({
+            owner: projectRepo.owner, repo: projectRepo.repo, state: 'open'
+          });
+          for (const pr of openPRs) {
+            const match = pr.body?.match(/Closes #(\d+)/);
+            if (match) coveredIssues.add(parseInt(match[1]));
+          }
+        } catch (err) {
+          console.warn(`[Pipeline] Could not fetch open PRs for ${name}: ${err.message}`);
+        }
+
+        const pm = new PMAgent(spec, channels);
+        pm.projectRepo = projectRepo;
+        pm.estimate = estimate;
+
+        const techLead = new TechLeadAgent(spec, channels);
+        techLead.run().catch(err => console.error(`[TechLead] Resume error for ${name}:`, err.message));
+
+        this.activeProjects[name] = { spec, channels, pm, techLead, spawnedIssues: coveredIssues };
+
+        this.watchIssues(name, projectRepo);
+        this.watchPRs(name, projectRepo);
+
+        resumed++;
+        console.log(`[Pipeline] Resumed: ${name} (${coveredIssues.size} issue(s) already have open PRs)`);
+      } catch (err) {
+        console.error(`[Pipeline] Failed to resume ${name}: ${err.message}`);
+        failed++;
+      }
+    }
+
+    // Post summary to #director once the Director's Discord client is ready
+    if (resumed > 0) {
+      this._postRecoverySummary(resumed, failed);
+    }
+  }
+
+  _postRecoverySummary(resumed, failed) {
+    const maxWaitMs = 30000;
+    const startedAt = Date.now();
+
+    const tryPost = async () => {
+      if (!this.director?.ready) {
+        if (Date.now() - startedAt < maxWaitMs) {
+          setTimeout(tryPost, 500);
+          return;
+        }
+        console.warn('[Pipeline] Director not ready after 30s — skipping recovery summary post');
+        return;
+      }
+      try {
+        const failNote = failed > 0 ? `, **${failed}** could not be resumed (check logs)` : '';
+        await postToChannel(
+          this.director.client,
+          process.env.DISCORD_CHANNEL_DIRECTOR,
+          `🔄 **Pipeline restarted.** Resumed **${resumed}** project(s)${failNote}.`
+        );
+      } catch (err) {
+        console.warn('[Pipeline] Could not post recovery summary:', err.message);
+      }
+    };
+
+    setTimeout(tryPost, 500);
   }
 
   async spawnManagers(spec) {
@@ -49,11 +139,20 @@ class Pipeline {
     // Tech Lead fires immediately — no approval needed
     techLead.run().catch(err => console.error('[TechLead] Error:', err.message));
 
-    // PM runs, then starts watchers when done
+    // PM runs, then persists state and starts watchers
     pm.run()
       .then(() => {
         console.log(`[Pipeline] PM finished. Starting watchers for: ${projectName}`);
         const projectRepo = pm.projectRepo;
+        if (projectRepo) {
+          this.db.saveProject(projectName, {
+            spec: spec.spec,
+            channels: projectChannels,
+            projectRepo,
+            estimate: pm.estimate,
+            status: 'active',
+          });
+        }
         this.watchIssues(projectName, projectRepo);
         this.watchPRs(projectName, projectRepo);
       })
@@ -92,7 +191,7 @@ class Pipeline {
     console.log(`[Pipeline] Watching Issues for project: ${projectName}`);
     const project = this.activeProjects[projectName];
 
-    project.spawnedIssues = new Set();
+    if (!project.spawnedIssues) project.spawnedIssues = new Set();
     const spawnedIssues = project.spawnedIssues;
     
     const poll = async () => {
@@ -124,7 +223,7 @@ class Pipeline {
         console.error(`[Pipeline] Issue watch error: ${err.message}`);
       }
 
-      setTimeout(poll, 30000);
+      setTimeout(poll, 300000);
     };
 
     // Wait 5 seconds before first poll to let GitHub index the new Issues
@@ -134,7 +233,8 @@ class Pipeline {
   async watchPRs(projectName, projectRepo) {
     console.log(`[Pipeline] Watching PRs for project: ${projectName}`);
     const project = this.activeProjects[projectName];
-    const reviewedPRs = new Set();
+    if (!project.reviewedPRs) project.reviewedPRs = new Set();
+    const reviewedPRs = project.reviewedPRs;
 
     const poll = async () => {
       try {
@@ -167,7 +267,7 @@ class Pipeline {
         console.error(`[Pipeline] PR watch error: ${err.message}`);
       }
 
-      setTimeout(poll, 30000);
+      setTimeout(poll, 300000);
     };
 
     setTimeout(poll, 10000);
@@ -222,6 +322,7 @@ class Pipeline {
       await archiveProjectChannel(this.director.client, projectChannelId, process.env.DISCORD_GUILD_ID);
     }
 
+    this.db.closeProject(projectName);
     delete this.activeProjects[projectName];
     console.log(`[Pipeline] Project closed: ${projectName}`);
   }

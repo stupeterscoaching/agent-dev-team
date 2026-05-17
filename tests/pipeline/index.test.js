@@ -1,6 +1,15 @@
 const mockCreateProjectChannel = jest.fn();
 const mockArchiveProjectChannel = jest.fn();
 
+const mockDb = {
+  saveProject: jest.fn(),
+  updateProject: jest.fn(),
+  getOpenProjects: jest.fn().mockReturnValue([]),
+  closeProject: jest.fn(),
+};
+jest.mock('../../src/state/db', () => jest.fn(() => mockDb));
+jest.mock('../../src/webhooks/github', () => jest.fn(() => ({ start: jest.fn().mockReturnThis(), stop: jest.fn() })));
+
 jest.mock('../../src/discord/client', () => ({
   createBotClient: jest.fn(() => ({
     on: jest.fn(), once: jest.fn(), off: jest.fn(),
@@ -365,5 +374,107 @@ describe('Pipeline.closeProject', () => {
     await pipeline.closeProject('test-project');
 
     expect(mockArchiveProjectChannel).not.toHaveBeenCalled();
+  });
+
+  test('marks project as closed in DB', async () => {
+    await pipeline.closeProject('test-project');
+    expect(mockDb.closeProject).toHaveBeenCalledWith('test-project');
+  });
+});
+
+describe('Pipeline.resume', () => {
+  const makeRow = (overrides = {}) => ({
+    name: 'test-project',
+    spec: { projectName: 'test-project', projectType: 'web-app', architecture: { techStack: { language: 'js', runtime: 'node', packages: [] } } },
+    channels: { managers: 'ch-managers' },
+    projectRepo: { owner: 'o', repo: 'r' },
+    estimate: { hours: 10, cost: 200, currency: 'CAD' },
+    ...overrides,
+  });
+
+  let pipeline;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    mockDb.getOpenProjects.mockReturnValue([]);
+    mockOctokit.pulls.list.mockResolvedValue({ data: [] });
+    pipeline = new Pipeline({ db: mockDb });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  async function flushAsync(ticks = 20) {
+    for (let i = 0; i < ticks; i++) await Promise.resolve();
+  }
+
+  test('does nothing when no open projects', async () => {
+    mockDb.getOpenProjects.mockReturnValue([]);
+    await pipeline.resume();
+    expect(pipeline.activeProjects).toEqual({});
+  });
+
+  test('restores a project into activeProjects', async () => {
+    mockDb.getOpenProjects.mockReturnValue([makeRow()]);
+    await pipeline.resume();
+    expect(pipeline.activeProjects['test-project']).toBeDefined();
+  });
+
+  test('sets pm.projectRepo and pm.estimate from DB row', async () => {
+    mockDb.getOpenProjects.mockReturnValue([makeRow()]);
+    await pipeline.resume();
+    const { pm } = pipeline.activeProjects['test-project'];
+    expect(pm.projectRepo).toEqual({ owner: 'o', repo: 'r' });
+    expect(pm.estimate).toEqual({ hours: 10, cost: 200, currency: 'CAD' });
+  });
+
+  test('starts watchers for each resumed project', async () => {
+    mockDb.getOpenProjects.mockReturnValue([makeRow()]);
+    pipeline.watchIssues = jest.fn();
+    pipeline.watchPRs = jest.fn();
+    await pipeline.resume();
+    expect(pipeline.watchIssues).toHaveBeenCalledWith('test-project', { owner: 'o', repo: 'r' });
+    expect(pipeline.watchPRs).toHaveBeenCalledWith('test-project', { owner: 'o', repo: 'r' });
+  });
+
+  test('skips a project when projectRepo is null', async () => {
+    mockDb.getOpenProjects.mockReturnValue([makeRow({ projectRepo: null })]);
+    pipeline.watchIssues = jest.fn();
+    await pipeline.resume();
+    expect(pipeline.watchIssues).not.toHaveBeenCalled();
+    expect(pipeline.activeProjects['test-project']).toBeUndefined();
+  });
+
+  test('pre-populates spawnedIssues from open PRs', async () => {
+    mockOctokit.pulls.list.mockResolvedValue({
+      data: [{ number: 10, body: 'Closes #3' }, { number: 11, body: 'Closes #5' }],
+    });
+    mockDb.getOpenProjects.mockReturnValue([makeRow()]);
+    pipeline.watchIssues = jest.fn();
+    pipeline.watchPRs = jest.fn();
+    await pipeline.resume();
+    const { spawnedIssues } = pipeline.activeProjects['test-project'];
+    expect(spawnedIssues.has(3)).toBe(true);
+    expect(spawnedIssues.has(5)).toBe(true);
+    expect(spawnedIssues.has(1)).toBe(false);
+  });
+
+  test('continues resuming other projects if one fails', async () => {
+    const badRow = makeRow({ name: 'bad-project' });
+    const goodRow = makeRow({ name: 'good-project' });
+    mockDb.getOpenProjects.mockReturnValue([badRow, goodRow]);
+
+    const TechLeadAgent = require('../../src/agents/managers/techlead');
+    TechLeadAgent
+      .mockImplementationOnce(() => { throw new Error('instantiation failed'); })
+      .mockImplementationOnce(() => ({ run: jest.fn().mockResolvedValue(undefined), discard: jest.fn() }));
+
+    pipeline.watchIssues = jest.fn();
+    pipeline.watchPRs = jest.fn();
+    await pipeline.resume();
+
+    expect(pipeline.activeProjects['good-project']).toBeDefined();
+    expect(pipeline.activeProjects['bad-project']).toBeUndefined();
   });
 });
