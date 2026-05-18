@@ -66,6 +66,12 @@ Every project gets its own GitHub repo and its own Discord channel (`#proj-{name
 
 ---
 
+## What runs on your machine
+
+> **Important:** Coder and Tech Lead agents execute model-generated shell commands **directly on your host** inside a temporary directory. There is no container isolation. Do not run this system against untrusted issue content or on a machine where arbitrary code execution is unacceptable. Real sandbox isolation is planned for v1.8.
+
+---
+
 ## Prerequisites
 
 - [Node.js](https://nodejs.org) v18+

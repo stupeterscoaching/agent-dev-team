@@ -25,7 +25,7 @@ const mockSandbox = {
   writeFile: jest.fn(),
   listDir: jest.fn(),
 };
-jest.mock('../../../src/sandbox', () => jest.fn(() => mockSandbox));
+jest.mock('../../../src/workspace', () => jest.fn(() => mockSandbox));
 
 const CoderAgent = require('../../../src/agents/workers/coder');
 
@@ -121,25 +121,25 @@ describe('CoderAgent.executeTool', () => {
     mockSandbox.exec.mockResolvedValue({ stdout: 'ok', stderr: '', exitCode: 0 });
   });
 
-  test('read_file delegates to sandbox.readFile', async () => {
+  test('read_file delegates to workspace.readFile', async () => {
     const result = await agent.executeTool('read_file', { path: 'src/app.js' }, mockSandbox);
     expect(mockSandbox.readFile).toHaveBeenCalledWith('src/app.js');
     expect(result).toBe('file content');
   });
 
-  test('write_file delegates to sandbox.writeFile and returns "written"', async () => {
+  test('write_file delegates to workspace.writeFile and returns "written"', async () => {
     const result = await agent.executeTool('write_file', { path: 'src/app.js', content: 'code' }, mockSandbox);
     expect(mockSandbox.writeFile).toHaveBeenCalledWith('src/app.js', 'code');
     expect(result).toBe('written');
   });
 
-  test('list_dir delegates to sandbox.listDir', async () => {
+  test('list_dir delegates to workspace.listDir', async () => {
     const result = await agent.executeTool('list_dir', { path: 'src' }, mockSandbox);
     expect(mockSandbox.listDir).toHaveBeenCalledWith('src');
     expect(result).toEqual(['a.js', 'b.js']);
   });
 
-  test('exec delegates to sandbox.exec', async () => {
+  test('exec delegates to workspace.exec', async () => {
     const result = await agent.executeTool('exec', { command: 'npm test' }, mockSandbox);
     expect(mockSandbox.exec).toHaveBeenCalledWith('npm test');
     expect(result).toEqual({ stdout: 'ok', stderr: '', exitCode: 0 });

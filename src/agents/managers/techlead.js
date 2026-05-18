@@ -1,6 +1,6 @@
 const { createBotClient, postToChannel } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');
-const Sandbox = require('../../sandbox');
+const Workspace = require('../../workspace');
 
 class TechLeadAgent {
   constructor(spec, projectChannels) {
@@ -63,7 +63,7 @@ class TechLeadAgent {
     const diff = await this.octokit.pulls.listFiles({ owner, repo, pull_number: prNumber });
     const filesChanged = diff.data.map(f => ({ filename: f.filename, changes: f.changes, patch: f.patch }));
 
-    // Run tests in a sandbox on the PR branch before scoring
+    // Run tests in a workspace on the PR branch before scoring
     const prBranch = pr.data.head.ref;
     const testResult = await this.runTestsForPR(prBranch, owner, repo);
 
@@ -120,38 +120,38 @@ class TechLeadAgent {
   }
 
   /**
-   * Creates a Sandbox on the PR branch, runs the test suite, and tears down.
+   * Creates a Workspace on the PR branch, runs the test suite, and tears down.
    * Returns { passed, output } — passed is null if tests could not be run.
    */
   async runTestsForPR(branch, owner, repo) {
-    const sandbox = new Sandbox({
+    const workspace = new Workspace({
       repoUrl: `https://github.com/${owner}/${repo}.git`,
       branch,
       token: process.env.GITHUB_TOKEN,
     });
 
     try {
-      await sandbox.boot();
-      return await this.runTests(sandbox);
+      await workspace.boot();
+      return await this.runTests(workspace);
     } catch (err) {
-      console.error(`[TechLead] Sandbox error for branch ${branch}: ${err.message}`);
-      return { passed: null, output: `Sandbox error: ${err.message}` };
+      console.error(`[TechLead] Workspace error for branch ${branch}: ${err.message}`);
+      return { passed: null, output: `Workspace error: ${err.message}` };
     } finally {
-      await sandbox.teardown();
+      await workspace.teardown();
     }
   }
 
   /**
-   * Detects the test command from package.json and runs it inside the sandbox.
+   * Detects the test command from package.json and runs it inside the workspace.
    * Returns { passed: boolean|null, output: string }
    *   passed = true  → tests ran and all passed
    *   passed = false → tests ran and failed
    *   passed = null  → could not determine (no package.json, no test script)
    */
-  async runTests(sandbox) {
+  async runTests(workspace) {
     let pkg;
     try {
-      pkg = JSON.parse(await sandbox.readFile('package.json'));
+      pkg = JSON.parse(await workspace.readFile('package.json'));
     } catch {
       return { passed: null, output: 'No package.json found' };
     }
@@ -162,12 +162,12 @@ class TechLeadAgent {
       return { passed: null, output: 'No test script defined in package.json' };
     }
 
-    const install = await sandbox.exec('npm install');
+    const install = await workspace.exec('npm install');
     if (install.exitCode !== 0) {
       return { passed: false, output: `npm install failed:\n${install.stderr || install.stdout}` };
     }
 
-    const test = await sandbox.exec('npm test');
+    const test = await workspace.exec('npm test');
     const output = [test.stdout, test.stderr].filter(Boolean).join('\n');
     return { passed: test.exitCode === 0, output };
   }
