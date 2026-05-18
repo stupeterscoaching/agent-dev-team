@@ -198,7 +198,7 @@ agent-dev-team/
 │   ├── config.js           ← env loading (loadEnv)
 │   ├── discord/            ← Discord client utilities
 │   └── pipeline/           ← orchestration and pollers
-├── tests/                  ← Jest test suite (155 tests, ~0.3s)
+├── tests/                  ← Jest test suite (~0.3s, all external services mocked)
 ├── projects/
 │   └── estimation-history.json
 ├── index.js                ← entry point
