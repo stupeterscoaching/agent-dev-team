@@ -1,6 +1,6 @@
 const { createWebhookClient, postAsWorker } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');
-const Sandbox = require('../../sandbox');
+const Workspace = require('../../workspace');
 
 const TOOLS = [
   {
@@ -89,34 +89,34 @@ class CoderAgent {
   async run() {
     await this.log(`🚀 Spawned for Issue #${this.issue.number}: ${this.issue.title}`);
 
-    const sandbox = new Sandbox({
+    const workspace = new Workspace({
       repoUrl: `https://github.com/${this.owner}/${this.repo}.git`,
       branch: 'main',
       token: process.env.GITHUB_TOKEN,
     });
 
     try {
-      await sandbox.boot();
-      await this.log(`📦 Sandbox ready`);
+      await workspace.boot();
+      await this.log(`📦 Workspace ready`);
 
-      const checkout = await sandbox.exec(`git checkout -b ${this.branchName}`);
+      const checkout = await workspace.exec(`git checkout -b ${this.branchName}`);
       if (checkout.exitCode !== 0) throw new Error(`Branch creation failed: ${checkout.stderr}`);
 
-      await this.agenticLoop(sandbox);
-      await this.commitAndPush(sandbox);
+      await this.agenticLoop(workspace);
+      await this.commitAndPush(workspace);
       await this.openPR();
       await this.log(`✅ PR opened for Issue #${this.issue.number}. Discarding.`);
     } catch (err) {
       await this.log(`❌ Fatal error on Issue #${this.issue.number}: ${err.message}`);
       await this.escalate(err.message);
     } finally {
-      await sandbox.teardown();
+      await workspace.teardown();
     }
   }
 
-  async agenticLoop(sandbox) {
+  async agenticLoop(workspace) {
     const useClaude = !!this.anthropicKey;
-    const listing = await sandbox.listDir('.');
+    const listing = await workspace.listDir('.');
     const userPrompt = `Task: ${this.issue.title}\n\n${this.issue.body}\n\nRepo root contains: ${listing.join(', ')}`;
 
     const messages = [{ role: 'user', content: userPrompt }];
@@ -133,7 +133,7 @@ class CoderAgent {
 
       let toolResult;
       try {
-        toolResult = await this.executeTool(response.tool, response.args, sandbox);
+        toolResult = await this.executeTool(response.tool, response.args, workspace);
       } catch (err) {
         toolResult = `Error: ${err.message}`;
       }
@@ -227,29 +227,29 @@ assistant:`;
     }
   }
 
-  async executeTool(name, args, sandbox) {
+  async executeTool(name, args, workspace) {
     switch (name) {
-      case 'read_file': return sandbox.readFile(args.path);
-      case 'write_file': await sandbox.writeFile(args.path, args.content); return 'written';
-      case 'list_dir': return sandbox.listDir(args.path);
-      case 'exec': return sandbox.exec(args.command);
+      case 'read_file': return workspace.readFile(args.path);
+      case 'write_file': await workspace.writeFile(args.path, args.content); return 'written';
+      case 'list_dir': return workspace.listDir(args.path);
+      case 'exec': return workspace.exec(args.command);
       default: return `Unknown tool: ${name}`;
     }
   }
 
-  async commitAndPush(sandbox) {
-    const status = await sandbox.exec('git status --porcelain');
+  async commitAndPush(workspace) {
+    const status = await workspace.exec('git status --porcelain');
     if (!status.stdout.trim()) {
       throw new Error('No files were written — nothing to commit');
     }
 
-    await sandbox.exec('git add -A');
-    const commit = await sandbox.exec(
+    await workspace.exec('git add -A');
+    const commit = await workspace.exec(
       `git -c user.name="Coder Agent" -c user.email="coder@adt.local" commit -m "[coder-${this.issue.number}] ${this.issue.title}"`
     );
     if (commit.exitCode !== 0) throw new Error(`Commit failed: ${commit.stderr}`);
 
-    const push = await sandbox.exec(`git push origin ${this.branchName}`);
+    const push = await workspace.exec(`git push origin ${this.branchName}`);
     if (push.exitCode !== 0) throw new Error(`Push failed: ${push.stderr}`);
 
     await this.log(`🚢 Branch pushed: ${this.branchName}`);

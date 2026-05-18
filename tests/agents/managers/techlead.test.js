@@ -33,7 +33,7 @@ const mockSandbox = {
   readFile: jest.fn(),
   exec: jest.fn(),
 };
-jest.mock('../../../src/sandbox', () => jest.fn(() => mockSandbox));
+jest.mock('../../../src/workspace', () => jest.fn(() => mockSandbox));
 
 const TechLeadAgent = require('../../../src/agents/managers/techlead');
 
@@ -190,7 +190,7 @@ describe('TechLeadAgent.runTestsForPR', () => {
     const result = await agent.runTestsForPR('coder/5/feature', 'test-owner', 'test-repo');
     expect(mockSandbox.teardown).toHaveBeenCalled();
     expect(result.passed).toBeNull();
-    expect(result.output).toContain('Sandbox error');
+    expect(result.output).toContain('Workspace error');
   });
 
   test('returns passed:null when sandbox boot fails', async () => {
@@ -198,7 +198,7 @@ describe('TechLeadAgent.runTestsForPR', () => {
 
     const result = await agent.runTestsForPR('coder/5/feature', 'test-owner', 'test-repo');
     expect(result.passed).toBeNull();
-    expect(result.output).toContain('Sandbox error');
+    expect(result.output).toContain('Workspace error');
     expect(mockSandbox.teardown).toHaveBeenCalled();
   });
 });
@@ -373,7 +373,7 @@ describe('TechLeadAgent.reviewPR', () => {
     expect(result).not.toHaveProperty('score');
   });
 
-  test('uses head.ref from PR data as the sandbox branch', async () => {
+  test('uses head.ref from PR data as the workspace branch', async () => {
     await runReviewPR(agent, 1, projectRepo);
     expect(agent.runTestsForPR).toHaveBeenCalledWith('coder/5/add-feature', 'test-owner', 'test-repo');
   });

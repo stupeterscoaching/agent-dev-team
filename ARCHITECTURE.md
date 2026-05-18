@@ -128,6 +128,8 @@ Gate 2 — Cost estimate confirmation
 
 ## Worker Execution Model
 
+> **Host execution warning:** Workers clone the project repo into a tempdir and run model-generated shell commands directly on the host via `child_process.exec`. There is no container isolation until v1.8. Do not run this system on a machine where arbitrary code execution is unacceptable.
+
 Workers are stateless, ephemeral agents. A fresh worker is spawned for each GitHub Issue. Routing is determined by the Issue's `type:*` label, set by the PM when it creates Issues.
 
 **Coder** (`type:feature` or unlabelled)
