@@ -204,7 +204,7 @@ agent-dev-team/
 ├── index.js                ← entry point
 ├── .env.example
 ├── ARCHITECTURE.md         ← full system design — read before touching code
-├── ROADMAP.md              ← planned milestones through v1.5 and beyond
+├── ROADMAP.md              ← v1.x milestone plan and v2.x direction
 ├── CONTRIBUTING.md
 └── LICENSE
 ```
