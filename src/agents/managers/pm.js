@@ -1,7 +1,5 @@
 const fs = require('fs');
 const path = require('path');
-// Suppress Octokit request logging
-process.env.NODE_DEBUG = '';
 
 const { createBotClient, postToChannel, waitForApproval } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');

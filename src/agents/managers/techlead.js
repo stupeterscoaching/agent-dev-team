@@ -1,8 +1,6 @@
 const { createBotClient, postToChannel } = require('../../discord/client');
 const { Octokit } = require('@octokit/rest');
 const Sandbox = require('../../sandbox');
-// Suppress Octokit request logging
-process.env.NODE_DEBUG = '';
 
 class TechLeadAgent {
   constructor(spec, projectChannels) {
