@@ -274,7 +274,10 @@ Workers post via webhook — no bot token, no persistent identity.
 
 ## Known Limitations (v1.5)
 
+- **Workers execute on the host** — Coder and Tech Lead run model-generated shell commands directly on the host in a tempdir; there is no container isolation. Real sandboxing is tracked for v1.8.
+- **No test runners for non-Node projects** — `runTests` returns `passed: null` for any project without a Node `test` script, and Tech Lead currently treats null as approved. Honest behaviour tracked for v1.10.
 - **Shared bot sessions** — Two concurrent projects share the same PM Discord session and the same TechLead Discord session (`PM_TOKEN`/`TECHLEAD_TOKEN` are global). Output is separated by project channel; approval disambiguation is handled by the `approve: {name}` syntax. True session isolation requires separate tokens.
 - **5-min polling fallback** — Webhooks are the primary trigger (v1.5). Pollers run every 5 minutes as a safety net for dropped webhooks. Projects without `WEBHOOK_URL`/`GITHUB_WEBHOOK_SECRET` configured still rely on the 5-min poller.
 - **Estimation bootstrapping** — The historical mean requires 3+ past projects of the same `projectType`. New deployments and new project types always cold-start on the LLM estimate. Confidence improves naturally as the history grows.
-- **Actuals not tracked** — On project close, `actuals` is written as a copy of `estimate` (variance = 0). Real time-tracking is a v2.x item.
+- **Actuals not tracked** — On project close, `actuals` is written as a copy of `estimate` (variance = 0). Tracked for v1.7.
+- **Tech Lead self-approval** — when `TECHLEAD_GITHUB_TOKEN` is not set, Tech Lead posts a comment instead of a formal review (GitHub prevents self-approval on the same account). Set the optional separate token to enable formal `APPROVE`/`REQUEST_CHANGES` reviews.
