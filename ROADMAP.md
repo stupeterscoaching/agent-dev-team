@@ -67,14 +67,21 @@ The v1.x line closes the gap between **what the docs claim** and **what the code
 - Documents the threat model and trust boundaries
 
 ### v1.9.0 — Security hardening
-- Webhook signature verification enforced on all inbound GitHub events
-- Secrets never logged; audit pass on all env-var handling
-- Rate limiting and abuse guards on the webhook receiver
+- Default project repos to private (currently created public; the highest-blast-radius security default)
+- Webhook handler fails closed on missing or invalid signature (currently fails open if secret unset)
+- Discord approval author allowlist (currently any non-bot user in #approvals can approve)
+- Commit message + branch interpolation: pass via stdin instead of shell-concatenating Issue titles
+- Fail-fast on missing required env vars at boot (currently silent crash minutes in)
+- Pass GitHub PAT via GIT_ASKPASS instead of embedding in clone URL
+- Set explicit permission overwrites on project Discord channels (currently inherit server defaults)
+- XML-fence untrusted Issue body in Coder prompt with instruction guards (defense-in-depth against prompt injection)
 
 ### v1.10.0 — Cost + resilience
-- Real actuals tracking: wall-clock time and token usage captured at project close
-- Estimate-vs-actual surfaced in the approval flow
-- Retry and circuit-breaker logic for external API calls
+- Per-Issue token cap and per-project cost cap with hard stops, warnings at 50% and 80%, persisted across crashes
+- Worker spawn-failure handling: don't mark an Issue handled until spawn succeeds (currently sticks forever on transient failure)
+- Clear poll timers on closeProject (currently leak forever per closed project)
+- Coder resume must handle the case where a remote branch already exists from a pre-crash push
+- Tech Lead must not auto-merge non-Node projects without verification (currently `passed: null` silently approves)
 
 ---
 
