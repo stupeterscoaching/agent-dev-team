@@ -205,12 +205,13 @@ agent-dev-team/
 
 ---
 
-## Known limitations (v1.2)
+## Known limitations (v1.5)
 
-- **Single-shot Coder** — workers generate code in one model call with no tool use or iteration. Output quality depends heavily on model quality and Issue detail. Agentic Coder with real tool use is planned for v1.3.
-- **No code execution** — Tech Lead reviews diff text, not running code. Tests don't run before merge. Real verification planned for v1.3.
-- **Hardcoded spec template** — Director always produces a Node/Express spec regardless of brief. Tech-stack-aware spec generation is planned for v1.4.
-- **Single project at a time** — PM and Tech Lead tokens are global. Two concurrent projects would share bot identity. True multi-project support is planned for v1.5.
+- **Workers execute on the host** — Coder and Tech Lead run model-generated shell commands directly on your machine in a tempdir. There is no container isolation. Real sandboxing is tracked for v1.8.
+- **No test runners for non-Node projects** — Tech Lead runs `npm test` if a `package.json` exists; for any other stack it returns `passed: null` and auto-merges. Tracked for v1.10.
+- **Estimation cold-start** — The historical mean requires 3+ past projects of the same `projectType`. New deployments always start with an LLM estimate; confidence improves as history grows.
+- **Shared bot sessions** — PM and Tech Lead Discord sessions are global (`PM_TOKEN`/`TECHLEAD_TOKEN`). Concurrent projects share the same session; approval disambiguation uses the `approve: {project-name}` syntax. True session isolation requires separate tokens per project.
+- **Actuals not tracked** — On project close, `actuals` is written as a copy of the estimate (variance = 0). Tracked for v1.7.
 - **Tech Lead self-approval** — when `TECHLEAD_GITHUB_TOKEN` is not set, Tech Lead posts a comment instead of a formal review (GitHub prevents self-approval). Set the optional separate token to enable formal `APPROVE`/`REQUEST_CHANGES` reviews.
 
 ---
@@ -221,7 +222,7 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full system design.
 
 ## Roadmap
 
-See [ROADMAP.md](./ROADMAP.md) for planned milestones through v1.5 and the v2.x direction.
+See [ROADMAP.md](./ROADMAP.md) for the v1.x milestone plan and v2.x direction.
 
 ---
 
