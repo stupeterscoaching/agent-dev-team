@@ -205,7 +205,7 @@ describe('CoderAgent.callClaude', () => {
     delete process.env.ANTHROPIC_API_KEY;
   });
 
-  test('returns tool call when model responds with tool_use block', async () => {
+  test('returns toolUses array when model responds with a single tool_use block', async () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       json: jest.fn().mockResolvedValue({
@@ -216,9 +216,28 @@ describe('CoderAgent.callClaude', () => {
     });
 
     const result = await agent.callClaude([{ role: 'user', content: 'task' }]);
-    expect(result.tool).toBe('read_file');
-    expect(result.args).toEqual({ path: 'README.md' });
-    expect(result.id).toBe('tu_123');
+    expect(result.toolUses).toHaveLength(1);
+    expect(result.toolUses[0].name).toBe('read_file');
+    expect(result.toolUses[0].input).toEqual({ path: 'README.md' });
+    expect(result.toolUses[0].id).toBe('tu_123');
+  });
+
+  test('returns all tool_use blocks in toolUses when model returns parallel calls', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: jest.fn().mockResolvedValue({
+        content: [
+          { type: 'tool_use', name: 'read_file', input: { path: 'a.js' }, id: 'tu_1' },
+          { type: 'tool_use', name: 'read_file', input: { path: 'b.js' }, id: 'tu_2' },
+        ],
+      }),
+    });
+
+    const result = await agent.callClaude([{ role: 'user', content: 'task' }]);
+    expect(result.toolUses).toHaveLength(2);
+    expect(result.toolUses[0].id).toBe('tu_1');
+    expect(result.toolUses[1].id).toBe('tu_2');
+    expect(result.raw).toBeDefined();
   });
 
   test('returns done when model responds with text only (no tool_use)', async () => {
@@ -334,6 +353,45 @@ describe('CoderAgent.agenticLoop', () => {
 
     await expect(agent.agenticLoop(mockSandbox)).resolves.not.toThrow();
     expect(global.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  test('Claude path: feeds all parallel tool_use results back in one user message', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    const claudeAgent = new CoderAgent(makeIssue(), null, makeProjectRepo());
+    claudeAgent.log = jest.fn();
+
+    mockSandbox.readFile.mockResolvedValue('file content');
+    mockSandbox.listDir.mockResolvedValue(['a.js', 'b.js']);
+
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockResolvedValue({
+          content: [
+            { type: 'tool_use', name: 'read_file', input: { path: 'a.js' }, id: 'tu_1' },
+            { type: 'tool_use', name: 'read_file', input: { path: 'b.js' }, id: 'tu_2' },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockResolvedValue({
+          content: [{ type: 'text', text: 'All files read. Done.' }],
+        }),
+      });
+
+    await claudeAgent.agenticLoop(mockSandbox);
+
+    const secondFetchBody = JSON.parse(global.fetch.mock.calls[1][1].body);
+    const msgs = secondFetchBody.messages;
+    const toolResultMsg = msgs[msgs.length - 1];
+    expect(toolResultMsg.role).toBe('user');
+    expect(Array.isArray(toolResultMsg.content)).toBe(true);
+    expect(toolResultMsg.content).toHaveLength(2);
+    expect(toolResultMsg.content[0]).toMatchObject({ type: 'tool_result', tool_use_id: 'tu_1' });
+    expect(toolResultMsg.content[1]).toMatchObject({ type: 'tool_result', tool_use_id: 'tu_2' });
+
+    delete process.env.ANTHROPIC_API_KEY;
   });
 });
 
