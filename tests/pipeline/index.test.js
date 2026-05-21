@@ -275,6 +275,76 @@ describe('Pipeline.watchPRs', () => {
   });
 });
 
+describe('Pipeline.spawnManagers', () => {
+  const makeSpec = () => ({
+    spec: { projectName: 'test-project', deliverables: [] },
+  });
+
+  async function flushPromises(ticks = 5) {
+    for (let i = 0; i < ticks; i++) await Promise.resolve();
+  }
+
+  let pipeline;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockCreateProjectChannel.mockResolvedValue({ channelId: 'ch-123', webhookUrl: null });
+    mockDb.saveProject.mockReturnValue(undefined);
+    pipeline = new Pipeline({ db: mockDb });
+    pipeline.watchIssues = jest.fn();
+    pipeline.watchPRs = jest.fn();
+  });
+
+  test('starts watchers when PM succeeds with a valid projectRepo', async () => {
+    const PMAgent = require('../../src/agents/managers/pm');
+    PMAgent.mockImplementation(() => ({
+      run: jest.fn().mockResolvedValue(undefined),
+      projectRepo: { owner: 'o', repo: 'r' },
+      estimate: { hours: 8 },
+    }));
+
+    await pipeline.spawnManagers(makeSpec());
+    await flushPromises();
+
+    expect(pipeline.watchIssues).toHaveBeenCalledWith('test-project', { owner: 'o', repo: 'r' });
+    expect(pipeline.watchPRs).toHaveBeenCalledWith('test-project', { owner: 'o', repo: 'r' });
+    expect(mockDb.saveProject).toHaveBeenCalledWith('test-project', expect.objectContaining({
+      projectRepo: { owner: 'o', repo: 'r' },
+    }));
+  });
+
+  test('does not start watchers when PM succeeds but projectRepo is null', async () => {
+    const PMAgent = require('../../src/agents/managers/pm');
+    PMAgent.mockImplementation(() => ({
+      run: jest.fn().mockResolvedValue(undefined),
+      projectRepo: null,
+      estimate: null,
+    }));
+
+    await pipeline.spawnManagers(makeSpec());
+    await flushPromises();
+
+    expect(pipeline.watchIssues).not.toHaveBeenCalled();
+    expect(pipeline.watchPRs).not.toHaveBeenCalled();
+    expect(mockDb.saveProject).not.toHaveBeenCalled();
+  });
+
+  test('does not start watchers when PM throws', async () => {
+    const PMAgent = require('../../src/agents/managers/pm');
+    PMAgent.mockImplementation(() => ({
+      run: jest.fn().mockRejectedValue(new Error('PM crashed hard')),
+      projectRepo: null,
+      estimate: null,
+    }));
+
+    await pipeline.spawnManagers(makeSpec());
+    await flushPromises();
+
+    expect(pipeline.watchIssues).not.toHaveBeenCalled();
+    expect(pipeline.watchPRs).not.toHaveBeenCalled();
+  });
+});
+
 describe('Pipeline.closeProject', () => {
   let pipeline;
   const existingHistory = { projects: [{ projectName: 'old-project' }] };
