@@ -129,24 +129,32 @@ class CoderAgent {
         return;
       }
 
-      await this.log(`🔧 ${response.tool}(${JSON.stringify(response.args)})`);
-
-      let toolResult;
-      try {
-        toolResult = await this.executeTool(response.tool, response.args, workspace);
-      } catch (err) {
-        toolResult = `Error: ${err.message}`;
-      }
-
-      const resultStr = typeof toolResult === 'object' ? JSON.stringify(toolResult) : String(toolResult ?? '');
-
-      if (useClaude) {
+      if (response.toolUses) {
+        // Claude path — one or more parallel tool_use blocks in a single response
+        const toolResults = [];
+        for (const toolUse of response.toolUses) {
+          await this.log(`🔧 ${toolUse.name}(${JSON.stringify(toolUse.input)})`);
+          let result;
+          try {
+            result = await this.executeTool(toolUse.name, toolUse.input, workspace);
+          } catch (err) {
+            result = `Error: ${err.message}`;
+          }
+          const resultStr = typeof result === 'object' ? JSON.stringify(result) : String(result ?? '');
+          toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: resultStr });
+        }
         messages.push({ role: 'assistant', content: response.raw });
-        messages.push({
-          role: 'user',
-          content: [{ type: 'tool_result', tool_use_id: response.id, content: resultStr }],
-        });
+        messages.push({ role: 'user', content: toolResults });
       } else {
+        // Ollama path — single tool per response
+        await this.log(`🔧 ${response.tool}(${JSON.stringify(response.args)})`);
+        let toolResult;
+        try {
+          toolResult = await this.executeTool(response.tool, response.args, workspace);
+        } catch (err) {
+          toolResult = `Error: ${err.message}`;
+        }
+        const resultStr = typeof toolResult === 'object' ? JSON.stringify(toolResult) : String(toolResult ?? '');
         messages.push({ role: 'assistant', content: response.raw });
         messages.push({ role: 'user', content: `Tool result:\n${resultStr}` });
       }
@@ -182,9 +190,9 @@ class CoderAgent {
 
     if (!response.ok) throw new Error(`Claude API error ${response.status}: ${data.error?.message}`);
 
-    const toolUse = data.content?.find(b => b.type === 'tool_use');
-    if (toolUse) {
-      return { tool: toolUse.name, args: toolUse.input, id: toolUse.id, raw: data.content };
+    const toolUses = data.content?.filter(b => b.type === 'tool_use') || [];
+    if (toolUses.length > 0) {
+      return { toolUses, raw: data.content };
     }
 
     const text = data.content?.find(b => b.type === 'text')?.text || 'Task complete';
