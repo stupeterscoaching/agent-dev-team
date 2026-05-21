@@ -103,10 +103,12 @@ class Director {
     const { spec } = this.activeBriefs[channelId];
     await postToChannel(this.client, channelId, '🔄 Updating spec...');
 
-    const updatedSpec = await this._refineSpecWithModel(spec, instruction);
+    const updatedSpec = await this._refineSpecWithModel(spec, instruction, channelId);
     this.activeBriefs[channelId].spec = updatedSpec;
 
-    await postToChannel(this.client, channelId, this._formatDraftSpec(updatedSpec));
+    if (updatedSpec !== spec) {
+      await postToChannel(this.client, channelId, this._formatDraftSpec(updatedSpec));
+    }
   }
 
   async confirmSpec(channelId) {
@@ -158,17 +160,35 @@ class Director {
     return formatted.length > 1900 ? formatted.slice(0, 1900) + '...' : formatted;
   }
 
-  async _refineSpecWithModel(currentSpec, instruction) {
-    return this.useClaudeApi
-      ? this._refineSpecWithClaude(currentSpec, instruction)
-      : this._refineSpecWithOllama(currentSpec, instruction);
+  async _refineSpecWithModel(currentSpec, instruction, channelId = null) {
+    const MAX_ATTEMPTS = 3;
+    let lastError = null;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      try {
+        return this.useClaudeApi
+          ? await this._refineSpecWithClaude(currentSpec, instruction, lastError)
+          : await this._refineSpecWithOllama(currentSpec, instruction, lastError);
+      } catch (err) {
+        lastError = err.message;
+        console.error(`[Director] Refinement attempt ${attempt + 1} failed: ${err.message}`);
+      }
+    }
+    if (channelId) {
+      await postToChannel(this.client, channelId,
+        `⚠️ Couldn't apply that refinement after ${MAX_ATTEMPTS} tries. The previous spec stands. Try rephrasing?`);
+    }
+    return currentSpec;
   }
 
-  async _refineSpecWithClaude(currentSpec, instruction) {
+  async _refineSpecWithClaude(currentSpec, instruction, lastError = null) {
+    const errorHint = lastError
+      ? `\n\nYour previous attempt failed with: "${lastError}". Fix the JSON and try again.`
+      : '';
     const prompt =
       `Here is the current project spec:\n\n${JSON.stringify(currentSpec, null, 2)}\n\n` +
       `The user wants to change: "${instruction}"\n\n` +
-      `Return ONLY the updated spec as valid JSON (no markdown, no backticks). Preserve all fields that do not need to change.`;
+      `Return ONLY the updated spec as valid JSON (no markdown, no backticks). Preserve all fields that do not need to change.` +
+      errorHint;
 
     const response = await this.anthropic.messages.create({
       model: this.model,
@@ -178,34 +198,29 @@ class Director {
     });
 
     const text = response.content[0].text.trim();
-    try {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) return JSON.parse(jsonMatch[0]);
-    } catch (err) {
-      console.error('[Director] Failed to parse refined spec:', err.message);
-    }
-    return currentSpec;
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) return JSON.parse(jsonMatch[0]);
+    throw new Error('No JSON object found in model response');
   }
 
-  async _refineSpecWithOllama(currentSpec, instruction) {
+  async _refineSpecWithOllama(currentSpec, instruction, lastError = null) {
+    const errorHint = lastError
+      ? ` Your previous attempt failed with: "${lastError}". Fix the JSON.`
+      : '';
     const response = await fetch(`${this.ollamaUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: this.model,
-        prompt: `You are the Director. Here is the current project spec:\n${JSON.stringify(currentSpec)}\n\nThe user wants: "${instruction}"\n\nReturn ONLY the updated spec as valid JSON, preserving unchanged fields.`,
+        prompt: `You are the Director. Here is the current project spec:\n${JSON.stringify(currentSpec)}\n\nThe user wants: "${instruction}"\n\nReturn ONLY the updated spec as valid JSON, preserving unchanged fields.${errorHint}`,
         stream: false
       })
     });
     const data = await response.json();
     const text = data.response.trim();
-    try {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) return JSON.parse(jsonMatch[0]);
-    } catch (err) {
-      console.error('[Director] Failed to parse refined spec:', err.message);
-    }
-    return currentSpec;
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) return JSON.parse(jsonMatch[0]);
+    throw new Error('No JSON object found in model response');
   }
 
   async buildSpec(brief, projectName = null) {
